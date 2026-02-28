@@ -5,10 +5,13 @@ import club.sitmc.sitParkourWarrior.map.Deployment;
 import club.sitmc.sitParkourWarrior.map.DynamicService;
 import club.sitmc.sitParkourWarrior.map.MapManager;
 import club.sitmc.sitParkourWarrior.map.ParkourMap;
+import club.sitmc.sitParkourWarrior.map.Region;
 import club.sitmc.sitParkourWarrior.util.Msg;
 import org.bukkit.Bukkit;
 import org.bukkit.Location;
+import org.bukkit.World;
 import org.bukkit.entity.Player;
+import org.bukkit.util.Vector;
 
 import java.util.HashMap;
 import java.util.Map;
@@ -42,16 +45,23 @@ public class SessionManager {
             Msg.send(player, "你已经在游玩中，先退出当前关卡。");
             return false;
         }
-        if (deployment.getStart() == null || deployment.getEnd() == null || deployment.getRegion() == null) {
+
+        Region region = deployment.getRegion();
+        Location start = resolveLocationWorld(deployment.getStart(), region);
+        Location end = resolveLocationWorld(deployment.getEnd(), region);
+        if (start == null || end == null || region == null) {
             Msg.send(player, "关卡配置不完整（需要区域、起点、终点）。");
             return false;
         }
+
         ParkourSession session = new ParkourSession(player.getUniqueId(), map.getId(), deployment.getId(), System.currentTimeMillis());
         sessions.put(player.getUniqueId(), session);
         dynamicService.onPlayerJoin(map, deployment);
-        if (deployment.getRegion() != null && deployment.getRegion().contains(player.getLocation())) {
+        if (region.contains(player.getLocation())) {
             session.startTimer(System.currentTimeMillis());
             session.setInsideRegion(true);
+            session.setInsideStart(false);
+            session.setPendingTitleAtStart(true);
         }
 
         Bukkit.getScheduler().runTask(plugin, () -> {
@@ -59,17 +69,10 @@ public class SessionManager {
             if (current == null) {
                 return;
             }
-            if (deployment.getRegion() != null && deployment.getRegion().contains(player.getLocation())) {
-                if (!current.isSuppressNextTitle()) {
-                    player.sendTitle(
-                            map.getDifficulty().getTitleColor() + map.getTitle(),
-                            "",
-                            10, 40, 10
-                    );
-                } else {
-                    current.setSuppressNextTitle(false);
-                }
+            if (region.contains(player.getLocation())) {
                 current.setInsideRegion(true);
+                current.setInsideStart(false);
+                current.setPendingTitleAtStart(true);
             }
         });
         return true;
@@ -159,15 +162,24 @@ public class SessionManager {
         if (deployment == null) {
             return;
         }
-        Location start = deployment.getStart();
+        Location start = resolveLocationWorld(deployment.getStart(), deployment.getRegion());
         if (start != null) {
-            session.setSuppressNextTitle(true);
             session.setInsideRegion(true);
+            session.setInsideStart(false);
             session.setSkipResetAtStartOnce(true);
-            player.getActivePotionEffects().forEach(effect -> player.removePotionEffect(effect.getType()));
-            player.getInventory().setBoots(null);
-            player.teleport(start);
+            teleportToStartLocation(player, start);
         }
+    }
+
+    public void teleportToStartLocation(Player player, Location start) {
+        if (player == null || start == null || start.getWorld() == null) {
+            return;
+        }
+        player.getActivePotionEffects().forEach(effect -> player.removePotionEffect(effect.getType()));
+        player.getInventory().setBoots(null);
+        player.setFallDistance(0f);
+        player.setVelocity(new Vector(0, 0, 0));
+        player.teleport(start);
     }
 
     private Deployment getDeployment(ParkourMap map, String deploymentId) {
@@ -175,5 +187,22 @@ public class SessionManager {
             return null;
         }
         return map.getDeployment(deploymentId);
+    }
+
+    public Location resolveLocationWorld(Location location, Region region) {
+        if (location == null) {
+            return null;
+        }
+        if (location.getWorld() != null) {
+            return location;
+        }
+        if (region == null || region.getWorldName() == null) {
+            return null;
+        }
+        World world = Bukkit.getWorld(region.getWorldName());
+        if (world == null) {
+            return null;
+        }
+        return new Location(world, location.getX(), location.getY(), location.getZ(), location.getYaw(), location.getPitch());
     }
 }

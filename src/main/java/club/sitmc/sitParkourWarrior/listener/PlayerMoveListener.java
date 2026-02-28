@@ -65,43 +65,45 @@ public class PlayerMoveListener implements Listener {
             return;
         }
         Region region = deployment.getRegion();
+        boolean wasInside = session.isInsideRegion();
         boolean inside = region != null && region.contains(to);
-        boolean fellBelowMinY = region != null && to.getBlockY() < region.getMinY();
         if (inside) {
             insideDeployment.put(player.getUniqueId(), deployment.getId());
         } else {
             insideDeployment.remove(player.getUniqueId());
         }
         if (!session.isInsideRegion() && inside) {
-            if (session.isSuppressNextTitle()) {
-                session.setSuppressNextTitle(false);
-            } else {
-                player.sendTitle(
-                        map.getDifficulty().getTitleColor() + map.getTitle(),
-                        "",
-                        10, 40, 10
-                );
-            }
+            session.setInsideStart(false);
+            session.setPendingTitleAtStart(true);
             if (!session.isStarted()) {
                 session.startTimer(System.currentTimeMillis());
             }
             session.setInsideRegion(true);
-        } else if (session.isInsideRegion() && !inside) {
-            if (!session.isCompleted() && !fellBelowMinY) {
+        } else if (wasInside && !inside) {
+            if (!session.isCompleted() && session.isStarted()) {
                 session.stopTimer(System.currentTimeMillis());
             }
             session.setInsideRegion(false);
             session.setInsideStart(false);
         }
 
-        if (deployment.getStart() != null && to.getWorld() != null
-                && deployment.getStart().getWorld() != null
-                && to.getWorld().getName().equals(deployment.getStart().getWorld().getName())) {
-            int dx = Math.abs(to.getBlockX() - deployment.getStart().getBlockX());
-            int dy = Math.abs(to.getBlockY() - deployment.getStart().getBlockY());
-            int dz = Math.abs(to.getBlockZ() - deployment.getStart().getBlockZ());
+        Location start = sessionManager.resolveLocationWorld(deployment.getStart(), region);
+        if (start != null && to.getWorld() != null
+                && start.getWorld() != null
+                && to.getWorld().getName().equals(start.getWorld().getName())) {
+            int dx = Math.abs(to.getBlockX() - start.getBlockX());
+            int dy = Math.abs(to.getBlockY() - start.getBlockY());
+            int dz = Math.abs(to.getBlockZ() - start.getBlockZ());
             boolean inStart = dx <= 1 && dy <= 1 && dz <= 1;
             if (inStart && !session.isInsideStart()) {
+                if (session.isPendingTitleAtStart()) {
+                    player.sendTitle(
+                            map.getDifficulty().getTitleColor() + map.getTitle(),
+                            "",
+                            10, 40, 10
+                    );
+                    session.setPendingTitleAtStart(false);
+                }
                 if (session.isSkipResetAtStartOnce()) {
                     session.setSkipResetAtStartOnce(false);
                     if (!session.isStarted()) {
@@ -117,21 +119,31 @@ public class PlayerMoveListener implements Listener {
             }
         }
 
-        if (session.isStarted() && deployment.getEnd() != null && to.getWorld() != null && deployment.getEnd().getWorld() != null
-                && to.getWorld().getName().equals(deployment.getEnd().getWorld().getName())) {
-            int dx = Math.abs(to.getBlockX() - deployment.getEnd().getBlockX());
-            int dy = Math.abs(to.getBlockY() - deployment.getEnd().getBlockY());
-            int dz = Math.abs(to.getBlockZ() - deployment.getEnd().getBlockZ());
+        Location end = sessionManager.resolveLocationWorld(deployment.getEnd(), region);
+        if (end != null && to.getWorld() != null && end.getWorld() != null
+                && to.getWorld().getName().equals(end.getWorld().getName())) {
+            int dx = Math.abs(to.getBlockX() - end.getBlockX());
+            int dy = Math.abs(to.getBlockY() - end.getBlockY());
+            int dz = Math.abs(to.getBlockZ() - end.getBlockZ());
             if (dx <= 1 && dy <= 1 && dz <= 1) {
+                if (session.isStarted()) {
+                    session.stopTimer(System.currentTimeMillis());
+                }
                 session.setCompleted(true);
                 sessionManager.endSession(player, true);
                 return;
             }
         }
-        if (region != null) {
-            if (to.getBlockY() < region.getMinY()) {
-                sessionManager.teleportToStart(player);
-            }
+        boolean leftFromRegion = region != null
+                && !session.isCompleted()
+                && to.getWorld() != null
+                && region.getWorldName().equals(to.getWorld().getName())
+                && wasInside
+                && !inside
+                && to.getBlockY() < region.getMinY();
+        if (leftFromRegion) {
+            sessionManager.teleportToStart(player);
+            return;
         }
     }
 

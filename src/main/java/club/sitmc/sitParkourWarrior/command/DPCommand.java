@@ -605,7 +605,7 @@ public class DPCommand implements CommandExecutor, TabCompleter {
         if (args.length == 2 && (args[0].equalsIgnoreCase("particles") || args[0].equalsIgnoreCase("sound"))) {
             return filter(args[1], Arrays.asList("on", "off"));
         }
-        if (args.length == 2 && (args[0].equalsIgnoreCase("deploy") || args[0].equalsIgnoreCase("undeploy")
+        if (args.length == 2 && (args[0].equalsIgnoreCase("deploy")
                 || args[0].equalsIgnoreCase("edit") || args[0].equalsIgnoreCase("delete"))) {
             return filter(args[1], new ArrayList<>(mapManager.getMaps().keySet()));
         }

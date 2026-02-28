@@ -12,7 +12,7 @@ public class ParkourSession {
     private boolean completed;
     private boolean insideRegion;
     private boolean insideStart;
-    private boolean suppressNextTitle;
+    private boolean pendingTitleAtStart;
     private boolean skipResetAtStartOnce;
 
     public ParkourSession(UUID playerId, String mapId, String deploymentId, long startTime) {
@@ -94,12 +94,12 @@ public class ParkourSession {
         this.insideStart = insideStart;
     }
 
-    public boolean isSuppressNextTitle() {
-        return suppressNextTitle;
+    public boolean isPendingTitleAtStart() {
+        return pendingTitleAtStart;
     }
 
-    public void setSuppressNextTitle(boolean suppressNextTitle) {
-        this.suppressNextTitle = suppressNextTitle;
+    public void setPendingTitleAtStart(boolean pendingTitleAtStart) {
+        this.pendingTitleAtStart = pendingTitleAtStart;
     }
 
     public boolean isSkipResetAtStartOnce() {

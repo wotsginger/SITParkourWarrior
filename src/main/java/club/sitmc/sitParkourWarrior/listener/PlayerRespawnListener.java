@@ -3,6 +3,7 @@ package club.sitmc.sitParkourWarrior.listener;
 import club.sitmc.sitParkourWarrior.map.Deployment;
 import club.sitmc.sitParkourWarrior.map.MapManager;
 import club.sitmc.sitParkourWarrior.map.ParkourMap;
+import club.sitmc.sitParkourWarrior.map.Region;
 import club.sitmc.sitParkourWarrior.session.ParkourSession;
 import club.sitmc.sitParkourWarrior.session.SessionManager;
 import org.bukkit.Location;
@@ -33,8 +34,12 @@ public class PlayerRespawnListener implements Listener {
         if (deployment == null) {
             return;
         }
-        Location start = deployment.getStart();
+        Region region = deployment.getRegion();
+        Location start = sessionManager.resolveLocationWorld(deployment.getStart(), region);
         if (start != null) {
+            session.setInsideRegion(true);
+            session.setInsideStart(false);
+            session.setSkipResetAtStartOnce(true);
             event.setRespawnLocation(start);
         }
     }

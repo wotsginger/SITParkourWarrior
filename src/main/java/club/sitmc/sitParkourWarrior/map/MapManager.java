@@ -254,9 +254,6 @@ public class MapManager {
             return null;
         }
         World world = Bukkit.getWorld(worldName);
-        if (world == null) {
-            return null;
-        }
         double x = section.getDouble(path + ".x");
         double y = section.getDouble(path + ".y");
         double z = section.getDouble(path + ".z");

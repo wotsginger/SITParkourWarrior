@@ -39,7 +39,6 @@ public class PlayerRespawnListener implements Listener {
         if (start != null) {
             session.setInsideRegion(true);
             session.setInsideStart(false);
-            session.setSkipResetAtStartOnce(true);
             event.setRespawnLocation(start);
         }
     }

@@ -18,6 +18,7 @@ import org.bukkit.Material;
 import org.bukkit.Particle;
 import org.bukkit.SoundGroup;
 import org.bukkit.block.data.BlockData;
+import org.bukkit.entity.Player;
 import org.bukkit.scheduler.BukkitTask;
 
 import java.io.File;
@@ -205,7 +206,7 @@ public class DynamicService {
                     .build();
             Operations.complete(operation);
             editSession.flushSession();
-            playChanges(map, changes);
+            playChanges(map, deployment.getRegion(), changes);
         } catch (IOException e) {
             plugin.getLogger().warning("Failed to paste schematic " + fileName + ": " + e.getMessage());
         } catch (Throwable t) {
@@ -228,18 +229,18 @@ public class DynamicService {
         return changes;
     }
 
-    private void playChanges(ParkourMap map, List<BlockChange> changes) {
+    private void playChanges(ParkourMap map, Region region, List<BlockChange> changes) {
         boolean particlesEnabled = map == null || map.isParticlesEnabled();
         boolean soundEnabled = map == null || map.isSoundEnabled();
+        // Avoid sound spam: for each material involved, play break/place sounds only once per tick of schematic swap.
+        Map<Material, BlockChange> firstBreakByMaterial = soundEnabled ? new HashMap<>() : null;
+        Map<Material, BlockChange> firstPlaceByMaterial = soundEnabled ? new HashMap<>() : null;
         for (BlockChange change : changes) {
             Material oldMat = change.oldData.getMaterial();
             Material newMat = change.newData.getMaterial();
             if (!oldMat.isAir()) {
                 if (soundEnabled) {
-                    SoundGroup group = change.oldData.getSoundGroup();
-                    if (group != null) {
-                        change.location.getWorld().playSound(change.location, group.getBreakSound(), 1.0f, 1.0f);
-                    }
+                    firstBreakByMaterial.putIfAbsent(oldMat, change);
                 }
                 if (particlesEnabled) {
                     change.location.getWorld().spawnParticle(
@@ -256,10 +257,7 @@ public class DynamicService {
             }
             if (!newMat.isAir()) {
                 if (soundEnabled) {
-                    SoundGroup group = change.newData.getSoundGroup();
-                    if (group != null) {
-                        change.location.getWorld().playSound(change.location, group.getPlaceSound(), 1.0f, 1.0f);
-                    }
+                    firstPlaceByMaterial.putIfAbsent(newMat, change);
                 }
                 if (particlesEnabled) {
                     change.location.getWorld().spawnParticle(
@@ -272,6 +270,32 @@ public class DynamicService {
                             0.0,
                             change.newData
                     );
+                }
+            }
+        }
+        if (soundEnabled) {
+            org.bukkit.World world = null;
+            if (region != null && region.getWorldName() != null) {
+                world = Bukkit.getWorld(region.getWorldName());
+            }
+            if (world != null) {
+                for (Player player : world.getPlayers()) {
+                    if (region != null && !region.contains(player.getLocation())) {
+                        continue;
+                    }
+                    Location at = player.getLocation();
+                    for (BlockChange change : firstBreakByMaterial.values()) {
+                        SoundGroup group = change.oldData.getSoundGroup();
+                        if (group != null) {
+                            player.playSound(at, group.getBreakSound(), 1.0f, 1.0f);
+                        }
+                    }
+                    for (BlockChange change : firstPlaceByMaterial.values()) {
+                        SoundGroup group = change.newData.getSoundGroup();
+                        if (group != null) {
+                            player.playSound(at, group.getPlaceSound(), 1.0f, 1.0f);
+                        }
+                    }
                 }
             }
         }

@@ -83,8 +83,9 @@ public class MapManager {
             section.set("pos2.z", region.getMaxZ());
         }
 
-        saveLocation(config, "start", map.getStart());
-        saveLocation(config, "end", map.getEnd());
+        String mapWorldName = region == null ? null : region.getWorldName();
+        saveLocation(config, "start", map.getStart(), mapWorldName);
+        saveLocation(config, "end", map.getEnd(), mapWorldName);
 
         DynamicData dynamicData = map.getDynamicData();
         ConfigurationSection dynamicSection = config.createSection("dynamic");
@@ -110,8 +111,9 @@ public class MapManager {
                     deploymentSection.set("region.pos2.y", depRegion.getMaxY());
                     deploymentSection.set("region.pos2.z", depRegion.getMaxZ());
                 }
-                saveLocation(deploymentSection, "start", deployment.getStart());
-                saveLocation(deploymentSection, "end", deployment.getEnd());
+                String deploymentWorldName = depRegion == null ? null : depRegion.getWorldName();
+                saveLocation(deploymentSection, "start", deployment.getStart(), deploymentWorldName);
+                saveLocation(deploymentSection, "end", deployment.getEnd(), deploymentWorldName);
             }
         }
 
@@ -233,11 +235,20 @@ public class MapManager {
         return region != null && region.volume() > MAX_REGION_VOLUME;
     }
 
-    private void saveLocation(ConfigurationSection section, String path, Location location) {
-        if (section == null || location == null || location.getWorld() == null) {
+    private void saveLocation(ConfigurationSection section, String path, Location location, String fallbackWorldName) {
+        if (section == null || location == null) {
             return;
         }
-        section.set(path + ".world", location.getWorld().getName());
+        String worldName = null;
+        if (location.getWorld() != null) {
+            worldName = location.getWorld().getName();
+        } else if (fallbackWorldName != null && !fallbackWorldName.isBlank()) {
+            worldName = fallbackWorldName;
+        }
+        if (worldName == null || worldName.isBlank()) {
+            return;
+        }
+        section.set(path + ".world", worldName);
         section.set(path + ".x", location.getX());
         section.set(path + ".y", location.getY());
         section.set(path + ".z", location.getZ());
@@ -253,12 +264,12 @@ public class MapManager {
         if (worldName == null) {
             return null;
         }
-        World world = Bukkit.getWorld(worldName);
         double x = section.getDouble(path + ".x");
         double y = section.getDouble(path + ".y");
         double z = section.getDouble(path + ".z");
         float yaw = (float) section.getDouble(path + ".yaw");
         float pitch = (float) section.getDouble(path + ".pitch");
+        World world = Bukkit.getWorld(worldName);
         return new Location(world, x, y, z, yaw, pitch);
     }
 

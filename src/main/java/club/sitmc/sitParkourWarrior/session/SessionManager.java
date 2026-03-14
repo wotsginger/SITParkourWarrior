@@ -42,7 +42,7 @@ public class SessionManager {
             return false;
         }
         if (sessions.containsKey(player.getUniqueId())) {
-            Msg.send(player, "你已经在游玩中，先退出当前关卡。");
+            Msg.send(player, "你已经在游玩中，请先退出当前关卡。");
             return false;
         }
 
@@ -58,7 +58,6 @@ public class SessionManager {
         sessions.put(player.getUniqueId(), session);
         dynamicService.onPlayerJoin(map, deployment);
         if (region.contains(player.getLocation())) {
-            session.startTimer(System.currentTimeMillis());
             session.setInsideRegion(true);
             session.setInsideStart(false);
             session.setPendingTitleAtStart(true);
@@ -96,12 +95,10 @@ public class SessionManager {
             double seconds = durationMs / 1000.0;
             if (map != null) {
                 String coloredTitle = map.getDifficulty().getTitleColor() + map.getTitle();
-                Msg.send(player, "您已通过 " + coloredTitle + "（用时：" + String.format("%.2f", seconds) + " 秒）。");
+                Msg.send(player, "你已通过 " + coloredTitle + "（用时：" + String.format("%.2f", seconds) + " 秒）。");
             } else {
-                Msg.send(player, "您已通过关卡（用时：" + String.format("%.2f", seconds) + " 秒）。");
+                Msg.send(player, "你已通过关卡（用时：" + String.format("%.2f", seconds) + " 秒）。");
             }
-        } else {
-            Msg.send(player, "已结束关卡。");
         }
         session.resetTimer();
     }
@@ -166,7 +163,6 @@ public class SessionManager {
         if (start != null) {
             session.setInsideRegion(true);
             session.setInsideStart(false);
-            session.setSkipResetAtStartOnce(true);
             teleportToStartLocation(player, start);
         }
     }
@@ -175,11 +171,18 @@ public class SessionManager {
         if (player == null || start == null || start.getWorld() == null) {
             return;
         }
-        player.getActivePotionEffects().forEach(effect -> player.removePotionEffect(effect.getType()));
-        player.getInventory().setBoots(null);
+        clearShoesAndBuff(player);
         player.setFallDistance(0f);
         player.setVelocity(new Vector(0, 0, 0));
         player.teleport(start);
+    }
+
+    public void clearShoesAndBuff(Player player) {
+        if (player == null) {
+            return;
+        }
+        player.getActivePotionEffects().forEach(effect -> player.removePotionEffect(effect.getType()));
+        player.getInventory().setBoots(null);
     }
 
     private Deployment getDeployment(ParkourMap map, String deploymentId) {

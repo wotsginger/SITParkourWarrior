@@ -13,7 +13,6 @@ public class ParkourSession {
     private boolean insideRegion;
     private boolean insideStart;
     private boolean pendingTitleAtStart;
-    private boolean skipResetAtStartOnce;
 
     public ParkourSession(UUID playerId, String mapId, String deploymentId, long startTime) {
         this.playerId = playerId;
@@ -60,7 +59,6 @@ public class ParkourSession {
         this.startTime = 0L;
         this.elapsedMs = 0L;
         this.started = false;
-        this.skipResetAtStartOnce = false;
     }
 
     public long getElapsedMs(long now) {
@@ -102,11 +100,4 @@ public class ParkourSession {
         this.pendingTitleAtStart = pendingTitleAtStart;
     }
 
-    public boolean isSkipResetAtStartOnce() {
-        return skipResetAtStartOnce;
-    }
-
-    public void setSkipResetAtStartOnce(boolean skipResetAtStartOnce) {
-        this.skipResetAtStartOnce = skipResetAtStartOnce;
-    }
 }

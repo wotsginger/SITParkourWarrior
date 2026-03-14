@@ -96,8 +96,8 @@ public class DynamicService {
             return false;
         }
         DynamicData data = map.getDynamicData();
-        // Consider dynamic active as long as there are at least 2 states.
-        return data.getStates().size() > 1;
+        // Consider dynamic active only when enabled and there are at least 2 states.
+        return data.isEnabled() && data.getStates().size() > 1;
     }
 
     private class DynamicTask {
@@ -190,22 +190,23 @@ public class DynamicService {
         try (FileInputStream fis = new FileInputStream(schemFile); ClipboardReader reader = format.getReader(fis)) {
             Clipboard clipboard = reader.read();
             World weWorld = com.sk89q.worldedit.bukkit.BukkitAdapter.adapt(bukkitWorld);
-            EditSession editSession = WorldEdit.getInstance().newEditSessionBuilder()
+            try (EditSession editSession = WorldEdit.getInstance().newEditSessionBuilder()
                     .world(weWorld)
-                    .build();
+                    .build()) {
+                editSession.setTrackingHistory(false);
+                tryDisableSideEffects(editSession);
 
-            tryDisableSideEffects(editSession);
-
-            Location origin = new Location(bukkitWorld, region.getMinX(), region.getMinY(), region.getMinZ());
-            List<BlockChange> changes = collectChanges(clipboard, bukkitWorld, origin);
-            ClipboardHolder holder = new ClipboardHolder(clipboard);
-            Operation operation = holder.createPaste(editSession)
-                    .to(BlockVector3.at(origin.getBlockX(), origin.getBlockY(), origin.getBlockZ()))
-                    .ignoreAirBlocks(false)
-                    .build();
-            Operations.complete(operation);
-            editSession.flushSession();
-            playChanges(map, changes);
+                Location origin = new Location(bukkitWorld, region.getMinX(), region.getMinY(), region.getMinZ());
+                List<BlockChange> changes = collectChanges(clipboard, bukkitWorld, origin);
+                ClipboardHolder holder = new ClipboardHolder(clipboard);
+                Operation operation = holder.createPaste(editSession)
+                        .to(BlockVector3.at(origin.getBlockX(), origin.getBlockY(), origin.getBlockZ()))
+                        .ignoreAirBlocks(false)
+                        .build();
+                Operations.complete(operation);
+                editSession.flushSession();
+                playChanges(map, deployment, changes);
+            }
         } catch (IOException e) {
             plugin.getLogger().warning("Failed to paste schematic " + fileName + ": " + e.getMessage());
         } catch (Throwable t) {
@@ -228,18 +229,24 @@ public class DynamicService {
         return changes;
     }
 
-    private void playChanges(ParkourMap map, List<BlockChange> changes) {
+    private void playChanges(ParkourMap map, Deployment deployment, List<BlockChange> changes) {
         boolean particlesEnabled = map == null || map.isParticlesEnabled();
         boolean soundEnabled = map == null || map.isSoundEnabled();
+        Map<Material, Location> breakSoundOrigins = soundEnabled ? new HashMap<>() : null;
+        Map<Material, Location> placeSoundOrigins = soundEnabled ? new HashMap<>() : null;
+        Map<Material, SoundGroup> breakSoundGroups = soundEnabled ? new HashMap<>() : null;
+        Map<Material, SoundGroup> placeSoundGroups = soundEnabled ? new HashMap<>() : null;
+        org.bukkit.World soundWorld = null;
         for (BlockChange change : changes) {
             Material oldMat = change.oldData.getMaterial();
             Material newMat = change.newData.getMaterial();
+            if (soundWorld == null) {
+                soundWorld = change.location.getWorld();
+            }
             if (!oldMat.isAir()) {
                 if (soundEnabled) {
-                    SoundGroup group = change.oldData.getSoundGroup();
-                    if (group != null) {
-                        change.location.getWorld().playSound(change.location, group.getBreakSound(), 1.0f, 1.0f);
-                    }
+                    breakSoundOrigins.putIfAbsent(oldMat, change.location);
+                    breakSoundGroups.putIfAbsent(oldMat, change.oldData.getSoundGroup());
                 }
                 if (particlesEnabled) {
                     change.location.getWorld().spawnParticle(
@@ -256,10 +263,8 @@ public class DynamicService {
             }
             if (!newMat.isAir()) {
                 if (soundEnabled) {
-                    SoundGroup group = change.newData.getSoundGroup();
-                    if (group != null) {
-                        change.location.getWorld().playSound(change.location, group.getPlaceSound(), 1.0f, 1.0f);
-                    }
+                    placeSoundOrigins.putIfAbsent(newMat, change.location);
+                    placeSoundGroups.putIfAbsent(newMat, change.newData.getSoundGroup());
                 }
                 if (particlesEnabled) {
                     change.location.getWorld().spawnParticle(
@@ -272,6 +277,29 @@ public class DynamicService {
                             0.0,
                             change.newData
                     );
+                }
+            }
+        }
+        if (soundEnabled) {
+            if (soundWorld != null) {
+                Region deploymentRegion = deployment == null ? null : deployment.getRegion();
+                for (org.bukkit.entity.Player player : soundWorld.getPlayers()) {
+                    if (deploymentRegion != null && !deploymentRegion.contains(player.getLocation())) {
+                        continue;
+                    }
+                    Location playerLoc = player.getLocation();
+                    for (Map.Entry<Material, Location> entry : breakSoundOrigins.entrySet()) {
+                        SoundGroup group = breakSoundGroups.get(entry.getKey());
+                        if (group != null) {
+                            player.playSound(playerLoc, group.getBreakSound(), 1.0f, 1.0f);
+                        }
+                    }
+                    for (Map.Entry<Material, Location> entry : placeSoundOrigins.entrySet()) {
+                        SoundGroup group = placeSoundGroups.get(entry.getKey());
+                        if (group != null) {
+                            player.playSound(playerLoc, group.getPlaceSound(), 1.0f, 1.0f);
+                        }
+                    }
                 }
             }
         }

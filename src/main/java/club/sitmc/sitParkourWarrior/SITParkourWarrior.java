@@ -13,6 +13,12 @@ import club.sitmc.sitParkourWarrior.session.SessionManager;
 import club.sitmc.sitParkourWarrior.util.ParticleService;
 import org.bukkit.plugin.java.JavaPlugin;
 
+import java.io.File;
+import java.io.IOException;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.util.concurrent.atomic.AtomicInteger;
+
 public final class SITParkourWarrior extends JavaPlugin {
 
     private MapManager mapManager;
@@ -23,6 +29,10 @@ public final class SITParkourWarrior extends JavaPlugin {
 
     @Override
     public void onEnable() {
+        // The server chooses to clear FAWE clipboard .bd files on startup; keep it explicit here.
+        // Path resolved relative to server root: <server>/plugins/FastAsyncWorldEdit/clipboard
+        cleanupFaweClipboardBdFiles();
+
         this.mapManager = new MapManager(this);
         this.dynamicService = new DynamicService(this, mapManager);
         this.particleService = new ParticleService(this);
@@ -45,6 +55,43 @@ public final class SITParkourWarrior extends JavaPlugin {
             getCommand("sitpkw").setTabCompleter(command);
         } else {
             getLogger().warning("Command sitpkw not found in plugin.yml");
+        }
+    }
+
+    private void cleanupFaweClipboardBdFiles() {
+        File dataFolder = getDataFolder(); // <server>/plugins/SITParkourWarrior
+        File pluginsDir = dataFolder == null ? null : dataFolder.getParentFile(); // <server>/plugins
+        File serverRoot = pluginsDir == null ? null : pluginsDir.getParentFile(); // <server>
+        if (serverRoot == null) {
+            return;
+        }
+        Path clipboardDir = serverRoot.toPath()
+                .resolve("plugins")
+                .resolve("FastAsyncWorldEdit")
+                .resolve("clipboard");
+        if (!Files.isDirectory(clipboardDir)) {
+            return;
+        }
+
+        AtomicInteger deleted = new AtomicInteger(0);
+        try (var stream = Files.walk(clipboardDir)) {
+            stream.filter(Files::isRegularFile)
+                    .filter(p -> p.getFileName().toString().toLowerCase().endsWith(".bd"))
+                    .forEach(p -> {
+                        try {
+                            Files.deleteIfExists(p);
+                            deleted.incrementAndGet();
+                        } catch (IOException e) {
+                            getLogger().warning("Failed to delete FAWE clipboard file: " + p + " (" + e.getMessage() + ")");
+                        }
+                    });
+        } catch (IOException e) {
+            getLogger().warning("Failed to scan FAWE clipboard folder: " + clipboardDir + " (" + e.getMessage() + ")");
+            return;
+        }
+
+        if (deleted.get() > 0) {
+            getLogger().info("Deleted " + deleted.get() + " FAWE clipboard .bd file(s) under " + clipboardDir);
         }
     }
 

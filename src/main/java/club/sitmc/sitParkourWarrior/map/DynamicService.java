@@ -191,21 +191,27 @@ public class DynamicService {
         try (FileInputStream fis = new FileInputStream(schemFile); ClipboardReader reader = format.getReader(fis)) {
             Clipboard clipboard = reader.read();
             World weWorld = com.sk89q.worldedit.bukkit.BukkitAdapter.adapt(bukkitWorld);
-            EditSession editSession = WorldEdit.getInstance().newEditSessionBuilder()
-                    .world(weWorld)
-                    .build();
-
-            tryDisableSideEffects(editSession);
-
             Location origin = new Location(bukkitWorld, region.getMinX(), region.getMinY(), region.getMinZ());
             List<BlockChange> changes = collectChanges(clipboard, bukkitWorld, origin);
-            ClipboardHolder holder = new ClipboardHolder(clipboard);
-            Operation operation = holder.createPaste(editSession)
-                    .to(BlockVector3.at(origin.getBlockX(), origin.getBlockY(), origin.getBlockZ()))
-                    .ignoreAirBlocks(false)
-                    .build();
-            Operations.complete(operation);
-            editSession.flushSession();
+            try (EditSession editSession = WorldEdit.getInstance().newEditSessionBuilder()
+                    .world(weWorld)
+                    .build()) {
+                try {
+                    // Reduce FAWE/WorldEdit history and disk churn (e.g. clipboard/*.bd).
+                    editSession.setTrackingHistory(false);
+                } catch (Throwable ignored) {
+                    // Older WorldEdit implementations may not support this call.
+                }
+                tryDisableSideEffects(editSession);
+
+                ClipboardHolder holder = new ClipboardHolder(clipboard);
+                Operation operation = holder.createPaste(editSession)
+                        .to(BlockVector3.at(origin.getBlockX(), origin.getBlockY(), origin.getBlockZ()))
+                        .ignoreAirBlocks(false)
+                        .build();
+                Operations.complete(operation);
+                editSession.flushSession();
+            }
             playChanges(map, deployment.getRegion(), changes);
         } catch (IOException e) {
             plugin.getLogger().warning("Failed to paste schematic " + fileName + ": " + e.getMessage());

@@ -41,6 +41,12 @@ public class SchematicService {
         BlockArrayClipboard clipboard = new BlockArrayClipboard(weRegion);
 
         try (EditSession editSession = WorldEdit.getInstance().newEditSessionBuilder().world(weWorld).build()) {
+            try {
+                // Reduce FAWE/WorldEdit history and disk churn (e.g. clipboard/*.bd).
+                editSession.setTrackingHistory(false);
+            } catch (Throwable ignored) {
+                // Older WorldEdit implementations may not support this call.
+            }
             ForwardExtentCopy copy = new ForwardExtentCopy(editSession, weRegion, clipboard, weRegion.getMinimumPoint());
             Operations.complete(copy);
         } catch (Throwable t) {
@@ -76,19 +82,26 @@ public class SchematicService {
         World weWorld = com.sk89q.worldedit.bukkit.BukkitAdapter.adapt(bukkitWorld);
         try (FileInputStream fis = new FileInputStream(schemFile); ClipboardReader reader = format.getReader(fis)) {
             Clipboard clipboard = reader.read();
-            EditSession editSession = WorldEdit.getInstance().newEditSessionBuilder()
+            try (EditSession editSession = WorldEdit.getInstance().newEditSessionBuilder()
                     .world(weWorld)
-                    .build();
-            tryDisableSideEffects(editSession);
+                    .build()) {
+                try {
+                    // Reduce FAWE/WorldEdit history and disk churn (e.g. clipboard/*.bd).
+                    editSession.setTrackingHistory(false);
+                } catch (Throwable ignored) {
+                    // Older WorldEdit implementations may not support this call.
+                }
+                tryDisableSideEffects(editSession);
 
-            ClipboardHolder holder = new ClipboardHolder(clipboard);
-            Operation operation = holder.createPaste(editSession)
-                    .to(BlockVector3.at(origin.getBlockX(), origin.getBlockY(), origin.getBlockZ()))
-                    .ignoreAirBlocks(false)
-                    .build();
-            Operations.complete(operation);
-            editSession.flushSession();
-            return true;
+                ClipboardHolder holder = new ClipboardHolder(clipboard);
+                Operation operation = holder.createPaste(editSession)
+                        .to(BlockVector3.at(origin.getBlockX(), origin.getBlockY(), origin.getBlockZ()))
+                        .ignoreAirBlocks(false)
+                        .build();
+                Operations.complete(operation);
+                editSession.flushSession();
+                return true;
+            }
         } catch (IOException e) {
             return false;
         } catch (Throwable t) {
@@ -109,6 +122,12 @@ public class SchematicService {
         BlockVector3 max = BlockVector3.at(region.getMaxX(), region.getMaxY(), region.getMaxZ());
         CuboidRegion weRegion = new CuboidRegion(weWorld, min, max);
         try (EditSession editSession = WorldEdit.getInstance().newEditSessionBuilder().world(weWorld).build()) {
+            try {
+                // Reduce FAWE/WorldEdit history and disk churn (e.g. clipboard/*.bd).
+                editSession.setTrackingHistory(false);
+            } catch (Throwable ignored) {
+                // Older WorldEdit implementations may not support this call.
+            }
             tryDisableSideEffects(editSession);
             editSession.setBlocks(weRegion, BlockTypes.AIR.getDefaultState());
             editSession.flushSession();

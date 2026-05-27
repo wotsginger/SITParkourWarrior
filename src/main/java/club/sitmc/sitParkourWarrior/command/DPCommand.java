@@ -5,7 +5,9 @@ import club.sitmc.sitParkourWarrior.map.Difficulty;
 import club.sitmc.sitParkourWarrior.map.DynamicData;
 import club.sitmc.sitParkourWarrior.map.DynamicService;
 import club.sitmc.sitParkourWarrior.map.MapManager;
+import club.sitmc.sitParkourWarrior.map.NodeType;
 import club.sitmc.sitParkourWarrior.map.ParkourMap;
+import club.sitmc.sitParkourWarrior.map.PointLocation;
 import club.sitmc.sitParkourWarrior.map.Region;
 import club.sitmc.sitParkourWarrior.map.SelectionManager;
 import club.sitmc.sitParkourWarrior.map.SchematicService;
@@ -81,6 +83,10 @@ public class DPCommand implements CommandExecutor, TabCompleter {
                 return handleSave(sender, args);
             case "delete":
                 return handleDelete(sender, args);
+            case "addforkpoint":
+                return handleAddForkPoint(sender);
+            case "delforkpoint":
+                return handleDelForkPoint(sender, args);
             case "reload":
                 return handleReload(sender);
             default:
@@ -91,7 +97,7 @@ public class DPCommand implements CommandExecutor, TabCompleter {
 
     private void sendUsage(CommandSender sender) {
         Msg.send(sender, "用法:");
-        Msg.send(sender, "/sitpkw create <id>  创建关卡并进入编辑");
+        Msg.send(sender, "/sitpkw create <id> [type]  创建关卡并进入编辑,type:level/fork/globalstart/globalend/branchend,缺省level");
         Msg.send(sender, "/sitpkw edit <id>    进入编辑模式");
         Msg.send(sender, "/sitpkw exit         退出编辑模式");
         Msg.send(sender, "/sitpkw particles <on|off>  设置关卡粒子效果");
@@ -108,6 +114,8 @@ public class DPCommand implements CommandExecutor, TabCompleter {
         Msg.send(sender, "/sitpkw dynamic list                   查看动态列表");
         Msg.send(sender, "/sitpkw deploy [id]                    在当前位置放出关卡");
         Msg.send(sender, "/sitpkw undeploy                       在当前位置收回关卡");
+        Msg.send(sender, "/sitpkw addforkpoint                   为当前编辑的FORK节点添加分支点");
+        Msg.send(sender, "/sitpkw delforkpoint <序号>            删除当前编辑FORK节点的分支点");
         Msg.send(sender, "/sitpkw delete <id>                    删除关卡");
         Msg.send(sender, "/sitpkw reload                         重载配置");
     }
@@ -118,18 +126,23 @@ public class DPCommand implements CommandExecutor, TabCompleter {
             return true;
         }
         if (args.length < 2) {
-            Msg.send(sender, "用法: /sitpkw create <id>");
+            Msg.send(sender, "用法: /sitpkw create <id> [type]");
             return true;
         }
         String id = args[1];
+        NodeType nodeType = NodeType.LEVEL;
+        if (args.length >= 3) {
+            nodeType = NodeType.fromString(args[2]);
+        }
         ParkourMap map = mapManager.createMap(id);
         if (map == null) {
             Msg.send(sender, "该 id 已存在。");
             return true;
         }
+        map.setNodeType(nodeType);
         selectionManager.setEditingMap(player, map);
         mapManager.saveMap(map);
-        Msg.send(sender, "已创建关卡并进入编辑: " + map.getId());
+        Msg.send(sender, "已创建关卡（" + nodeType.toConfigString() + "）并进入编辑: " + map.getId());
         return true;
     }
 
@@ -453,19 +466,79 @@ public class DPCommand implements CommandExecutor, TabCompleter {
             Msg.send(sender, "关卡不存在，请先进入编辑或提供 id。");
             return true;
         }
-        if (map.getRegion() == null || map.getStart() == null || map.getEnd() == null) {
-            Msg.send(sender, "关卡未设置区域或起点/终点。");
+
+        NodeType type = map.getNodeType();
+
+        // ---- type-specific validation ----
+        if (map.getRegion() == null) {
+            Msg.send(sender, "关卡未设置区域。");
             return true;
         }
+        switch (type) {
+            case LEVEL:
+                if (map.getStart() == null || map.getEnd() == null) {
+                    Msg.send(sender, "关卡未设置起点或终点。");
+                    return true;
+                }
+                break;
+            case FORK:
+                if (map.getForkBranchPoints().isEmpty()) {
+                    Msg.send(sender, "岔路口节点需要先设置区域和至少一个岔路点位。");
+                    return true;
+                }
+                break;
+            case GLOBAL_START:
+                if (map.getStart() == null) {
+                    Msg.send(sender, "全局起点未设置起点。");
+                    return true;
+                }
+                for (ParkourMap m : mapManager.getMaps().values()) {
+                    if (m == map) continue;
+                    if (m.getNodeType() == NodeType.GLOBAL_START && !m.getDeployments().isEmpty()) {
+                        Msg.send(sender, "全局起点已存在，无法部署第二个，请先回收已有的全局起点。");
+                        return true;
+                    }
+                }
+                break;
+            case GLOBAL_END:
+            case BRANCH_END:
+                if (map.getEnd() == null) {
+                    Msg.send(sender, "终点节点未设置终点。");
+                    return true;
+                }
+                break;
+            default:
+                if (map.getStart() == null || map.getEnd() == null) {
+                    Msg.send(sender, "关卡未设置起点或终点。");
+                    return true;
+                }
+                break;
+        }
+
         Location origin = player.getLocation().getBlock().getLocation();
         Region template = map.getRegion();
         int sizeX = template.getMaxX() - template.getMinX();
         int sizeY = template.getMaxY() - template.getMinY();
         int sizeZ = template.getMaxZ() - template.getMinZ();
-        Location templateStart = map.getStart();
-        int offsetX = origin.getBlockX() - templateStart.getBlockX();
-        int offsetY = origin.getBlockY() - templateStart.getBlockY();
-        int offsetZ = origin.getBlockZ() - templateStart.getBlockZ();
+
+        // ---- offset reference point by type ----
+        PointLocation refPoint;
+        switch (type) {
+            case FORK:
+                refPoint = map.getForkBranchPoints().get(0);
+                break;
+            case GLOBAL_END:
+            case BRANCH_END:
+                refPoint = map.getEnd();
+                break;
+            default:
+                refPoint = map.getStart();
+                break;
+        }
+
+        int offsetX = origin.getBlockX() - refPoint.getBlockX();
+        int offsetY = origin.getBlockY() - refPoint.getBlockY();
+        int offsetZ = origin.getBlockZ() - refPoint.getBlockZ();
         int newMinX = template.getMinX() + offsetX;
         int newMinY = template.getMinY() + offsetY;
         int newMinZ = template.getMinZ() + offsetZ;
@@ -473,29 +546,49 @@ public class DPCommand implements CommandExecutor, TabCompleter {
         int newMaxY = newMinY + sizeY;
         int newMaxZ = newMinZ + sizeZ;
 
-        Location newStart = new Location(origin.getWorld(),
-                map.getStart().getX() + offsetX,
-                map.getStart().getY() + offsetY,
-                map.getStart().getZ() + offsetZ,
-                map.getStart().getYaw(),
-                map.getStart().getPitch());
-        Location newEnd = new Location(origin.getWorld(),
-                map.getEnd().getX() + offsetX,
-                map.getEnd().getY() + offsetY,
-                map.getEnd().getZ() + offsetZ,
-                map.getEnd().getYaw(),
-                map.getEnd().getPitch());
+        Region newRegion = new Region(origin.getWorld().getName(), newMinX, newMinY, newMinZ, newMaxX, newMaxY, newMaxZ);
+        String worldName = origin.getWorld().getName();
 
-        if (newEnd.getWorld() != null) {
-            newEnd.clone().subtract(0, 1, 0).getBlock().setType(Material.EMERALD_BLOCK);
+        // ---- translate coordinates by type ----
+        PointLocation newStart = null;
+        PointLocation newEnd = null;
+        List<PointLocation> newForkPoints = new ArrayList<>();
+
+        switch (type) {
+            case LEVEL:
+                newStart = translatePoint(map.getStart(), worldName, offsetX, offsetY, offsetZ);
+                newEnd = translatePoint(map.getEnd(), worldName, offsetX, offsetY, offsetZ);
+                break;
+            case FORK:
+                for (PointLocation fp : map.getForkBranchPoints()) {
+                    newForkPoints.add(translatePoint(fp, worldName, offsetX, offsetY, offsetZ));
+                }
+                break;
+            case GLOBAL_START:
+                newStart = translatePoint(map.getStart(), worldName, offsetX, offsetY, offsetZ);
+                break;
+            case GLOBAL_END:
+            case BRANCH_END:
+                newEnd = translatePoint(map.getEnd(), worldName, offsetX, offsetY, offsetZ);
+                break;
+            default:
+                newStart = translatePoint(map.getStart(), worldName, offsetX, offsetY, offsetZ);
+                newEnd = translatePoint(map.getEnd(), worldName, offsetX, offsetY, offsetZ);
+                break;
         }
 
-        Deployment deployment = new Deployment(UUID.randomUUID().toString(),
-                new Region(origin.getWorld().getName(), newMinX, newMinY, newMinZ, newMaxX, newMaxY, newMaxZ),
-                newStart,
-                newEnd);
+        // ---- emerald marker: only for types that have an end ----
+        if (newEnd != null) {
+            Location endLoc = newEnd.toLocation();
+            if (endLoc != null && endLoc.getWorld() != null) {
+                endLoc.clone().subtract(0, 1, 0).getBlock().setType(Material.EMERALD_BLOCK);
+            }
+        }
+
+        Deployment deployment = new Deployment(UUID.randomUUID().toString(), newRegion, newStart, newEnd, newForkPoints);
         map.addDeployment(deployment);
 
+        // Schematic paste (region-based, works for all types).
         File mapFolder = mapManager.getMapFolder(map);
         String initialState = map.getDynamicData().getStates().isEmpty() ? null : map.getDynamicData().getStates().get(0);
         if (initialState != null) {
@@ -509,6 +602,15 @@ public class DPCommand implements CommandExecutor, TabCompleter {
         mapManager.saveMap(map);
         Msg.send(sender, "已放出关卡: " + map.getId());
         return true;
+    }
+
+    private PointLocation translatePoint(PointLocation template, String worldName, int offsetX, int offsetY, int offsetZ) {
+        return new PointLocation(worldName,
+                template.getX() + offsetX,
+                template.getY() + offsetY,
+                template.getZ() + offsetZ,
+                template.getYaw(),
+                template.getPitch());
     }
 
     private boolean handleUndeploy(CommandSender sender, String[] args) {
@@ -582,6 +684,62 @@ public class DPCommand implements CommandExecutor, TabCompleter {
         return true;
     }
 
+    private boolean handleAddForkPoint(CommandSender sender) {
+        if (!(sender instanceof Player player)) {
+            Msg.send(sender, "只能由玩家执行。");
+            return true;
+        }
+        ParkourMap map = selectionManager.getEditingMap(player);
+        if (map == null) {
+            Msg.send(sender, "请先 /sitpkw create <id> 或 /sitpkw edit <id>。");
+            return true;
+        }
+        if (map.getNodeType() != NodeType.FORK) {
+            Msg.send(sender, "只有 FORK 节点可以添加分支点。");
+            return true;
+        }
+        Location loc = player.getLocation();
+        map.getForkBranchPoints().add(PointLocation.fromLocation(loc));
+        mapManager.saveMap(map);
+        Msg.send(sender, "已添加分支点 #" + map.getForkBranchPoints().size() + " (" + loc.getBlockX() + ", " + loc.getBlockY() + ", " + loc.getBlockZ() + ")");
+        return true;
+    }
+
+    private boolean handleDelForkPoint(CommandSender sender, String[] args) {
+        if (!(sender instanceof Player player)) {
+            Msg.send(sender, "只能由玩家执行。");
+            return true;
+        }
+        ParkourMap map = selectionManager.getEditingMap(player);
+        if (map == null) {
+            Msg.send(sender, "请先 /sitpkw create <id> 或 /sitpkw edit <id>。");
+            return true;
+        }
+        if (map.getNodeType() != NodeType.FORK) {
+            Msg.send(sender, "只有 FORK 节点可以删除分支点。");
+            return true;
+        }
+        if (args.length < 2) {
+            Msg.send(sender, "用法: /sitpkw delforkpoint <序号>");
+            return true;
+        }
+        int index;
+        try {
+            index = Integer.parseInt(args[1]);
+        } catch (NumberFormatException ex) {
+            Msg.send(sender, "序号必须是数字。");
+            return true;
+        }
+        if (index < 1 || index > map.getForkBranchPoints().size()) {
+            Msg.send(sender, "序号超出范围（1-" + map.getForkBranchPoints().size() + "）。");
+            return true;
+        }
+        PointLocation removed = map.getForkBranchPoints().remove(index - 1);
+        mapManager.saveMap(map);
+        Msg.send(sender, "已删除分支点 #" + index + " (" + removed.getBlockX() + ", " + removed.getBlockY() + ", " + removed.getBlockZ() + ")");
+        return true;
+    }
+
     private boolean handleReload(CommandSender sender) {
         sessionManager.endAll();
         dynamicService.stopAll();
@@ -594,7 +752,10 @@ public class DPCommand implements CommandExecutor, TabCompleter {
     @Override
     public List<String> onTabComplete(CommandSender sender, Command command, String alias, String[] args) {
         if (args.length == 1) {
-            return filter(args[0], Arrays.asList("create", "edit", "exit", "particles", "sound", "pos1", "pos2", "setstart", "setend", "title", "difficulty", "dynamic", "deploy", "undeploy", "save", "delete", "reload"));
+            return filter(args[0], Arrays.asList("create", "edit", "exit", "particles", "sound", "pos1", "pos2", "setstart", "setend", "title", "difficulty", "dynamic", "deploy", "undeploy", "addforkpoint", "delforkpoint", "save", "delete", "reload"));
+        }
+        if (args.length == 3 && args[0].equalsIgnoreCase("create")) {
+            return filter(args[2], Arrays.asList("level", "fork", "globalstart", "globalend", "branchend"));
         }
         if (args.length == 2 && args[0].equalsIgnoreCase("difficulty")) {
             return filter(args[1], Arrays.asList("easy", "normal", "hard", "extreme"));
@@ -608,6 +769,16 @@ public class DPCommand implements CommandExecutor, TabCompleter {
         if (args.length == 2 && (args[0].equalsIgnoreCase("deploy")
                 || args[0].equalsIgnoreCase("edit") || args[0].equalsIgnoreCase("delete"))) {
             return filter(args[1], new ArrayList<>(mapManager.getMaps().keySet()));
+        }
+        if (args.length == 2 && args[0].equalsIgnoreCase("delforkpoint") && sender instanceof Player player) {
+            ParkourMap map = selectionManager.getEditingMap(player);
+            if (map != null) {
+                List<String> indices = new ArrayList<>();
+                for (int i = 1; i <= map.getForkBranchPoints().size(); i++) {
+                    indices.add(String.valueOf(i));
+                }
+                return filter(args[1], indices);
+            }
         }
         return Collections.emptyList();
     }

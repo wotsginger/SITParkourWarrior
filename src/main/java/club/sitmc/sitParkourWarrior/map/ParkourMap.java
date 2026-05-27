@@ -11,13 +11,15 @@ public class ParkourMap {
     private String title;
     private Difficulty difficulty = Difficulty.EASY;
     private Region region;
-    private Location start;
-    private Location end;
+    private PointLocation start;
+    private PointLocation end;
     private final DynamicData dynamicData = new DynamicData();
     private boolean deployed;
     private boolean particlesEnabled = true;
     private boolean soundEnabled = true;
     private final List<Deployment> deployments = new ArrayList<>();
+    private NodeType nodeType = NodeType.LEVEL;
+    private final List<PointLocation> forkBranchPoints = new ArrayList<>();
 
     public ParkourMap(String id) {
         this.id = id;
@@ -52,20 +54,36 @@ public class ParkourMap {
         this.region = region;
     }
 
-    public Location getStart() {
+    public PointLocation getStart() {
         return start;
     }
 
     public void setStart(Location start) {
+        this.start = PointLocation.fromLocation(start);
+    }
+
+    public void setStart(PointLocation start) {
         this.start = start;
     }
 
-    public Location getEnd() {
+    public Location getStartLocation() {
+        return start != null ? start.toLocation() : null;
+    }
+
+    public PointLocation getEnd() {
         return end;
     }
 
     public void setEnd(Location end) {
+        this.end = PointLocation.fromLocation(end);
+    }
+
+    public void setEnd(PointLocation end) {
         this.end = end;
+    }
+
+    public Location getEndLocation() {
+        return end != null ? end.toLocation() : null;
     }
 
     public DynamicData getDynamicData() {
@@ -145,5 +163,17 @@ public class ParkourMap {
             }
         }
         return null;
+    }
+
+    public NodeType getNodeType() {
+        return nodeType;
+    }
+
+    public void setNodeType(NodeType nodeType) {
+        this.nodeType = nodeType != null ? nodeType : NodeType.LEVEL;
+    }
+
+    public List<PointLocation> getForkBranchPoints() {
+        return forkBranchPoints;
     }
 }

@@ -6,7 +6,7 @@ public enum Difficulty {
     EASY(ChatColor.GREEN),
     NORMAL(ChatColor.YELLOW),
     HARD(ChatColor.RED),
-    EXTREME(ChatColor.DARK_PURPLE);
+    EXTREME(ChatColor.LIGHT_PURPLE);
 
     private final ChatColor titleColor;
 

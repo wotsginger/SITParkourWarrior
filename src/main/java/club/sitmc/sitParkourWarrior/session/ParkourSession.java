@@ -1,5 +1,9 @@
 package club.sitmc.sitParkourWarrior.session;
 
+import org.bukkit.Location;
+
+import java.util.ArrayList;
+import java.util.List;
 import java.util.UUID;
 
 public class ParkourSession {
@@ -13,6 +17,12 @@ public class ParkourSession {
     private boolean insideRegion;
     private boolean insideStart;
     private boolean pendingTitleAtStart;
+    private boolean skipResetAtStartOnce;
+    private double deathLineY;
+    private Location checkpoint;
+    private SessionState state = SessionState.RUNNING;
+    private final List<Location> visitedForkPoints = new ArrayList<>();
+    private Location initialForkFallback;
 
     public ParkourSession(UUID playerId, String mapId, String deploymentId, long startTime) {
         this.playerId = playerId;
@@ -59,6 +69,7 @@ public class ParkourSession {
         this.startTime = 0L;
         this.elapsedMs = 0L;
         this.started = false;
+        this.skipResetAtStartOnce = false;
     }
 
     public long getElapsedMs(long now) {
@@ -100,4 +111,47 @@ public class ParkourSession {
         this.pendingTitleAtStart = pendingTitleAtStart;
     }
 
+    public boolean isSkipResetAtStartOnce() {
+        return skipResetAtStartOnce;
+    }
+
+    public void setSkipResetAtStartOnce(boolean skipResetAtStartOnce) {
+        this.skipResetAtStartOnce = skipResetAtStartOnce;
+    }
+
+    public double getDeathLineY() {
+        return deathLineY;
+    }
+
+    public void setDeathLineY(double deathLineY) {
+        this.deathLineY = deathLineY;
+    }
+
+    public Location getCheckpoint() {
+        return checkpoint;
+    }
+
+    public void setCheckpoint(Location checkpoint) {
+        this.checkpoint = checkpoint;
+    }
+
+    public List<Location> getVisitedForkPoints() {
+        return visitedForkPoints;
+    }
+
+    public Location getInitialForkFallback() {
+        return initialForkFallback;
+    }
+
+    public void setInitialForkFallback(Location initialForkFallback) {
+        this.initialForkFallback = initialForkFallback;
+    }
+
+    public SessionState getState() {
+        return state;
+    }
+
+    public void setState(SessionState state) {
+        this.state = state != null ? state : SessionState.RUNNING;
+    }
 }

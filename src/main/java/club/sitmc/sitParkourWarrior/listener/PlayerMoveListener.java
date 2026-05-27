@@ -1,26 +1,32 @@
 package club.sitmc.sitParkourWarrior.listener;
 
+import club.sitmc.sitParkourWarrior.map.CourseLinker;
 import club.sitmc.sitParkourWarrior.map.Deployment;
 import club.sitmc.sitParkourWarrior.map.MapManager;
+import club.sitmc.sitParkourWarrior.map.NodeType;
 import club.sitmc.sitParkourWarrior.map.ParkourMap;
 import club.sitmc.sitParkourWarrior.map.Region;
 import club.sitmc.sitParkourWarrior.map.SelectionManager;
 import club.sitmc.sitParkourWarrior.session.ParkourSession;
 import club.sitmc.sitParkourWarrior.session.SessionManager;
+import club.sitmc.sitParkourWarrior.session.SessionState;
 import org.bukkit.Location;
 import org.bukkit.entity.Player;
 import org.bukkit.event.EventHandler;
 import org.bukkit.event.Listener;
 import org.bukkit.event.player.PlayerMoveEvent;
 
+import java.util.ArrayList;
+import java.util.List;
+
 public class PlayerMoveListener implements Listener {
     private final SessionManager sessionManager;
     private final MapManager mapManager;
     private final SelectionManager selectionManager;
-    // 记录玩家当前处于哪个 deployment 区域内，避免重复触发 startSession。
     private final java.util.Map<java.util.UUID, String> insideDeployment = new java.util.HashMap<>();
 
-    public PlayerMoveListener(SessionManager sessionManager, MapManager mapManager, SelectionManager selectionManager) {
+    public PlayerMoveListener(SessionManager sessionManager, MapManager mapManager,
+                              SelectionManager selectionManager) {
         this.sessionManager = sessionManager;
         this.mapManager = mapManager;
         this.selectionManager = selectionManager;
@@ -33,20 +39,37 @@ public class PlayerMoveListener implements Listener {
         if (to == null) {
             return;
         }
-        // 仅在“跨方块”移动时处理，减少高频 move 事件带来的开销。
+
+        // Death-line check must execute before the same-block return below.
+        // A purely vertical fall can produce consecutive move events whose
+        // block Y differs but X/Z block coords are unchanged, making the
+        // same-block check *not* match — however, slow diagonal movement or
+        // sub-block Y changes within the same integer block can still be
+        // skipped.  Placing the check first guarantees every move event with
+        // a valid session is tested against the current death-line.
+        Player player = event.getPlayer();
+        ParkourSession session = sessionManager.getSession(player.getUniqueId());
+        if (session != null && to.getBlockY() < session.getDeathLineY()) {
+            ParkourMap deathMap = mapManager.getMap(session.getMapId());
+            if (deathMap != null && deathMap.getNodeType() == NodeType.FORK) {
+                sessionManager.handleForkFallback(player, session);
+            } else {
+                sessionManager.teleportToCheckpoint(player);
+            }
+            return;
+        }
+
         if (from.getBlockX() == to.getBlockX()
                 && from.getBlockY() == to.getBlockY()
                 && from.getBlockZ() == to.getBlockZ()) {
             return;
         }
-        Player player = event.getPlayer();
-        // 玩家在编辑选区时，不参与跑酷逻辑。
         if (selectionManager.isEditing(player)) {
             return;
         }
-        ParkourSession session = sessionManager.getSession(player.getUniqueId());
+
+        // ---- No session: auto-start when entering a deployment region ----
         if (session == null) {
-            // 无会话时：若进入某个 deployment 区域，则自动创建会话。
             DeploymentMatch match = findDeploymentByRegion(to);
             if (match != null) {
                 String current = insideDeployment.get(player.getUniqueId());
@@ -59,8 +82,10 @@ public class PlayerMoveListener implements Listener {
             }
             return;
         }
+
         ParkourMap map = mapManager.getMap(session.getMapId());
         if (map == null) {
+            sessionManager.endSession(player, false);
             return;
         }
         Deployment deployment = map.getDeployment(session.getDeploymentId());
@@ -68,38 +93,47 @@ public class PlayerMoveListener implements Listener {
             sessionManager.endSession(player, false);
             return;
         }
+
+        // ---- Handoff check for non-FORK nodes (RUNNING or AWAITING_HANDOFF) ----
+        if (map.getNodeType() != NodeType.FORK
+                && (session.getState() == SessionState.RUNNING || session.getState() == SessionState.AWAITING_HANDOFF)) {
+            if (checkHandoff(player, session, to)) {
+                return;
+            }
+            if (session.getState() == SessionState.AWAITING_HANDOFF) {
+                return; // No matching entry point nearby, keep waiting.
+            }
+            // RUNNING with no match: fall through to normal RUNNING logic below.
+        }
+
+        // ---- FORK runtime: track visited points, check handoff out ----
+        if (map.getNodeType() == NodeType.FORK) {
+            handleForkRuntime(player, session, map, deployment, to);
+            return;
+        }
+
+        // ---- Active (RUNNING) session: timer, start, end logic ----
         Region region = deployment.getRegion();
         boolean wasInside = session.isInsideRegion();
         boolean inside = region != null && region.contains(to);
-        // 在区域底部(接近 minY)触发回弹：传送回起点，防止玩家掉出关卡。
-        boolean hitLowerBounce = region != null
-                && !session.isCompleted()
-                && to.getWorld() != null
-                && region.getWorldName().equals(to.getWorld().getName())
-                && wasInside
-                && to.getBlockY() <= region.getMinY() + 1;
-        if (hitLowerBounce) {
-            sessionManager.teleportToStart(player);
-            return;
-        }
+
         if (inside) {
             insideDeployment.put(player.getUniqueId(), deployment.getId());
         } else {
             insideDeployment.remove(player.getUniqueId());
         }
-        if (!session.isInsideRegion() && inside) {
-            // 首次进入区域后，标记待显示标题（真正进入起点范围时展示）。
+
+        if (!wasInside && inside) {
             session.setInsideStart(false);
             session.setPendingTitleAtStart(true);
+            if (!session.isStarted() && map.getNodeType() == NodeType.LEVEL) {
+                session.startTimer(System.currentTimeMillis());
+            }
             session.setInsideRegion(true);
         } else if (wasInside && !inside) {
-            // 离开区域且仍在进行中：中止并重置本次计时。
             if (!session.isCompleted() && session.isStarted()) {
                 session.stopTimer(System.currentTimeMillis());
-                session.resetTimer();
             }
-            sessionManager.clearShoesAndBuff(player);
-            sessionManager.endSession(player, false);
             session.setInsideRegion(false);
             session.setInsideStart(false);
         }
@@ -111,7 +145,6 @@ public class PlayerMoveListener implements Listener {
             int dx = Math.abs(to.getBlockX() - start.getBlockX());
             int dy = Math.abs(to.getBlockY() - start.getBlockY());
             int dz = Math.abs(to.getBlockZ() - start.getBlockZ());
-            // 起点判定使用 1 格容差，提升站位容错。
             boolean inStart = dx <= 1 && dy <= 1 && dz <= 1;
             if (inStart && !session.isInsideStart()) {
                 if (session.isPendingTitleAtStart()) {
@@ -122,8 +155,12 @@ public class PlayerMoveListener implements Listener {
                     );
                     session.setPendingTitleAtStart(false);
                 }
-                // 仅首次起跑时开启计时；被回弹传送回起点时不重置当前计时。
-                if (!session.isStarted()) {
+                if (session.isSkipResetAtStartOnce()) {
+                    session.setSkipResetAtStartOnce(false);
+                    if (!session.isStarted()) {
+                        session.startTimer(System.currentTimeMillis());
+                    }
+                } else {
                     session.resetTimer();
                     session.startTimer(System.currentTimeMillis());
                 }
@@ -139,28 +176,137 @@ public class PlayerMoveListener implements Listener {
             int dx = Math.abs(to.getBlockX() - end.getBlockX());
             int dy = Math.abs(to.getBlockY() - end.getBlockY());
             int dz = Math.abs(to.getBlockZ() - end.getBlockZ());
-            // 进入终点范围：停止计时并以成功状态结束会话。
             if (dx <= 1 && dy <= 1 && dz <= 1) {
-                // 未从起点起跑（计时未开始）时，终点判定无效。
-                if (!session.isStarted()) {
-                    return;
-                }
-                if (session.isStarted()) {
-                    session.stopTimer(System.currentTimeMillis());
-                }
-                session.setCompleted(true);
-                sessionManager.clearShoesAndBuff(player);
                 sessionManager.endSession(player, true);
                 return;
             }
         }
     }
 
+    /**
+     * Check whether the player has reached any deployed node's entry point
+     * (3x3x3 range). First match wins when multiple entry points overlap
+     * (deterministic: map iteration order).
+     * Entry points: LEVEL→start, FORK→each forkPoint, GLOBAL_END/BRANCH_END→end.
+     * GLOBAL_START has no entry point and is skipped.
+     * Own deployment is always excluded.
+     *
+     * @return true if a handoff was executed
+     */
+    private boolean checkHandoff(Player player, ParkourSession session, Location to) {
+        for (ParkourMap map : mapManager.getMaps().values()) {
+            if (map.getNodeType() == NodeType.GLOBAL_START) {
+                continue;
+            }
+            for (Deployment dep : map.getDeployments()) {
+                if (map.getId().equalsIgnoreCase(session.getMapId())
+                        && dep.getId().equals(session.getDeploymentId())) {
+                    continue;
+                }
+                List<Location> entryPoints = getEntryPoints(map, dep);
+                for (Location ep : entryPoints) {
+                    if (isNear(to, ep)) {
+                        if (session.getState() == SessionState.RUNNING) {
+                            insideDeployment.remove(player.getUniqueId());
+                        }
+                        sessionManager.handoffToNextDeployment(player, session, map, dep, ep);
+                        return true;
+                    }
+                }
+            }
+        }
+        return false;
+    }
+
+    /**
+     * Return the entry-point locations for a deployment.
+     * LEVEL → start; FORK → each resolved fork point;
+     * GLOBAL_END/BRANCH_END → end; GLOBAL_START → empty.
+     */
+    private List<Location> getEntryPoints(ParkourMap map, Deployment dep) {
+        List<Location> points = new ArrayList<>();
+        NodeType type = map.getNodeType();
+        if (type == NodeType.GLOBAL_START) {
+            return points;
+        }
+        Region region = dep.getRegion();
+        if (type == NodeType.FORK) {
+            points.addAll(CourseLinker.resolveForkBranchPoints(map, dep));
+        } else if (type == NodeType.GLOBAL_END || type == NodeType.BRANCH_END) {
+            Location end = sessionManager.resolveLocationWorld(dep.getEnd(), region);
+            if (end != null) {
+                points.add(end);
+            }
+        } else {
+            Location start = sessionManager.resolveLocationWorld(dep.getStart(), region);
+            if (start != null) {
+                points.add(start);
+            }
+        }
+        return points;
+    }
+
+    /**
+     * FORK runtime: track visited fork points and check handoff out to next LEVEL.
+     */
+    private void handleForkRuntime(Player player, ParkourSession session, ParkourMap map, Deployment deployment, Location to) {
+        Region region = deployment.getRegion();
+
+        // Track visited fork points.
+        List<Location> forkPoints = CourseLinker.resolveForkBranchPoints(map, deployment);
+        for (Location fp : forkPoints) {
+            if (isNear(to, fp) && !containsLocation(session.getVisitedForkPoints(), fp)) {
+                session.getVisitedForkPoints().add(fp.clone());
+            }
+        }
+
+        // Check handoff out: any other node's entry point nearby.
+        if (checkHandoff(player, session, to)) {
+            return;
+        }
+
+        // Region inside/outside tracking.
+        boolean inside = region != null && region.contains(to);
+        if (!session.isInsideRegion() && inside) {
+            session.setInsideRegion(true);
+        } else if (session.isInsideRegion() && !inside) {
+            session.setInsideRegion(false);
+        }
+    }
+
+    private boolean isNear(Location a, Location b) {
+        if (a.getWorld() == null || b.getWorld() == null) {
+            return false;
+        }
+        if (!a.getWorld().getName().equals(b.getWorld().getName())) {
+            return false;
+        }
+        int dx = Math.abs(a.getBlockX() - b.getBlockX());
+        int dy = Math.abs(a.getBlockY() - b.getBlockY());
+        int dz = Math.abs(a.getBlockZ() - b.getBlockZ());
+        return dx <= 1 && dy <= 1 && dz <= 1;
+    }
+
+    private boolean containsLocation(List<Location> list, Location loc) {
+        if (loc.getWorld() == null) {
+            return false;
+        }
+        for (Location l : list) {
+            if (l.getWorld() != null
+                    && l.getWorld().getName().equals(loc.getWorld().getName())
+                    && l.getBlockX() == loc.getBlockX()
+                    && l.getBlockY() == loc.getBlockY()
+                    && l.getBlockZ() == loc.getBlockZ()) {
+                return true;
+            }
+        }
+        return false;
+    }
+
     private DeploymentMatch findDeploymentByRegion(Location location) {
         if (location == null || location.getWorld() == null) {
             return null;
         }
-        // 遍历所有地图的 deployment，找到玩家所在区域。
         for (ParkourMap map : mapManager.getMaps().values()) {
             for (Deployment deployment : map.getDeployments()) {
                 Region region = deployment.getRegion();

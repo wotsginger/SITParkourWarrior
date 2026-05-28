@@ -19,6 +19,7 @@ public class ParkourMap {
     private boolean soundEnabled = true;
     private final List<Deployment> deployments = new ArrayList<>();
     private NodeType nodeType = NodeType.LEVEL;
+    private EndTier endTier = EndTier.NORMAL;
     private final List<PointLocation> forkBranchPoints = new ArrayList<>();
 
     public ParkourMap(String id) {
@@ -171,6 +172,14 @@ public class ParkourMap {
 
     public void setNodeType(NodeType nodeType) {
         this.nodeType = nodeType != null ? nodeType : NodeType.LEVEL;
+    }
+
+    public EndTier getEndTier() {
+        return endTier;
+    }
+
+    public void setEndTier(EndTier endTier) {
+        this.endTier = endTier != null ? endTier : EndTier.NORMAL;
     }
 
     public List<PointLocation> getForkBranchPoints() {

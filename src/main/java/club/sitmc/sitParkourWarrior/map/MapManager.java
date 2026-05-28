@@ -72,6 +72,10 @@ public class MapManager {
         config.set("effects.sound", map.isSoundEnabled());
         config.set("node_type", map.getNodeType().toConfigString());
 
+        if (map.getNodeType() == NodeType.GLOBAL_END) {
+            config.set("end_tier", map.getEndTier().toConfigString());
+        }
+
         List<PointLocation> forkBranchPoints = map.getForkBranchPoints();
         if (!forkBranchPoints.isEmpty()) {
             ConfigurationSection forkSection = config.createSection("fork");
@@ -184,6 +188,7 @@ public class MapManager {
                 map.setParticlesEnabled(config.getBoolean("effects.particles", true));
                 map.setSoundEnabled(config.getBoolean("effects.sound", true));
                 map.setNodeType(NodeType.fromString(config.getString("node_type", "level")));
+                map.setEndTier(EndTier.fromString(config.getString("end_tier")));
 
                 ConfigurationSection forkSection = config.getConfigurationSection("fork");
                 if (forkSection != null) {

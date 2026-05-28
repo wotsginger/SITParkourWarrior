@@ -14,6 +14,7 @@ public class PlayerQuitListener implements Listener {
 
     @EventHandler
     public void onQuit(PlayerQuitEvent event) {
+        sessionManager.removeRunProgress(event.getPlayer().getUniqueId());
         sessionManager.endSession(event.getPlayer(), false);
     }
 }

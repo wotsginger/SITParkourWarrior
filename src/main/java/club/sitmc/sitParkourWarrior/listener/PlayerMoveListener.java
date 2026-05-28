@@ -10,6 +10,7 @@ import club.sitmc.sitParkourWarrior.map.SelectionManager;
 import club.sitmc.sitParkourWarrior.session.ParkourSession;
 import club.sitmc.sitParkourWarrior.session.SessionManager;
 import club.sitmc.sitParkourWarrior.session.SessionState;
+import club.sitmc.sitParkourWarrior.util.Msg;
 import org.bukkit.Location;
 import org.bukkit.entity.Player;
 import org.bukkit.event.EventHandler;
@@ -64,6 +65,10 @@ public class PlayerMoveListener implements Listener {
                 && from.getBlockZ() == to.getBlockZ()) {
             return;
         }
+
+        // Full-course timing check: independent of session state.
+        checkFullCourseTiming(player, to);
+
         if (selectionManager.isEditing(player)) {
             return;
         }
@@ -179,6 +184,38 @@ public class PlayerMoveListener implements Listener {
             if (dx <= 1 && dy <= 1 && dz <= 1) {
                 sessionManager.endSession(player, true);
                 return;
+            }
+        }
+    }
+
+    /**
+     * Full-course timing: GLOBAL_START start-point and GLOBAL_END end-point
+     * detection. Independent of session state — runs on every cross-block move.
+     */
+    private void checkFullCourseTiming(Player player, Location to) {
+        for (ParkourMap map : mapManager.getMaps().values()) {
+            NodeType type = map.getNodeType();
+            if (type != NodeType.GLOBAL_START && type != NodeType.GLOBAL_END) {
+                continue;
+            }
+            for (Deployment dep : map.getDeployments()) {
+                if (type == NodeType.GLOBAL_START) {
+                    Location start = sessionManager.resolveLocationWorld(dep.getStart(), dep.getRegion());
+                    if (start != null && isNear(to, start)) {
+                        sessionManager.startFullCourse(player.getUniqueId());
+                        return;
+                    }
+                } else {
+                    Location end = sessionManager.resolveLocationWorld(dep.getEnd(), dep.getRegion());
+                    if (end != null && isNear(to, end)) {
+                        if (sessionManager.getRunProgress(player.getUniqueId()) != null) {
+                            sessionManager.finishFullCourse(player);
+                        } else {
+                            Msg.send(player, "你未从全局起点出发，无法结算全程计时。");
+                        }
+                        return;
+                    }
+                }
             }
         }
     }

@@ -4,6 +4,7 @@ import club.sitmc.sitParkourWarrior.map.Deployment;
 import club.sitmc.sitParkourWarrior.map.Difficulty;
 import club.sitmc.sitParkourWarrior.map.DynamicData;
 import club.sitmc.sitParkourWarrior.map.DynamicService;
+import club.sitmc.sitParkourWarrior.map.EndTier;
 import club.sitmc.sitParkourWarrior.map.MapManager;
 import club.sitmc.sitParkourWarrior.map.NodeType;
 import club.sitmc.sitParkourWarrior.map.ParkourMap;
@@ -87,6 +88,8 @@ public class DPCommand implements CommandExecutor, TabCompleter {
                 return handleAddForkPoint(sender);
             case "delforkpoint":
                 return handleDelForkPoint(sender, args);
+            case "setendtier":
+                return handleSetEndTier(sender, args);
             case "reload":
                 return handleReload(sender);
             default:
@@ -116,6 +119,7 @@ public class DPCommand implements CommandExecutor, TabCompleter {
         Msg.send(sender, "/sitpkw undeploy                       在当前位置收回关卡");
         Msg.send(sender, "/sitpkw addforkpoint                   为当前编辑的FORK节点添加分支点");
         Msg.send(sender, "/sitpkw delforkpoint <序号>            删除当前编辑FORK节点的分支点");
+        Msg.send(sender, "/sitpkw setendtier <easy|normal|hard>  设置全局终点难度类型");
         Msg.send(sender, "/sitpkw delete <id>                    删除关卡");
         Msg.send(sender, "/sitpkw reload                         重载配置");
     }
@@ -740,6 +744,31 @@ public class DPCommand implements CommandExecutor, TabCompleter {
         return true;
     }
 
+    private boolean handleSetEndTier(CommandSender sender, String[] args) {
+        if (!(sender instanceof Player player)) {
+            Msg.send(sender, "只能由玩家执行。");
+            return true;
+        }
+        ParkourMap map = selectionManager.getEditingMap(player);
+        if (map == null) {
+            Msg.send(sender, "请先 /sitpkw create <id> 或 /sitpkw edit <id>。");
+            return true;
+        }
+        if (map.getNodeType() != NodeType.GLOBAL_END) {
+            Msg.send(sender, "该命令仅适用于全局终点(globalend)类型节点。");
+            return true;
+        }
+        if (args.length < 2) {
+            Msg.send(sender, "用法: /sitpkw setendtier <easy|normal|hard>");
+            return true;
+        }
+        EndTier tier = EndTier.fromString(args[1]);
+        map.setEndTier(tier);
+        mapManager.saveMap(map);
+        Msg.send(sender, "全局终点难度类型已设置为 " + tier.toConfigString() + "。");
+        return true;
+    }
+
     private boolean handleReload(CommandSender sender) {
         sessionManager.endAll();
         dynamicService.stopAll();
@@ -752,10 +781,13 @@ public class DPCommand implements CommandExecutor, TabCompleter {
     @Override
     public List<String> onTabComplete(CommandSender sender, Command command, String alias, String[] args) {
         if (args.length == 1) {
-            return filter(args[0], Arrays.asList("create", "edit", "exit", "particles", "sound", "pos1", "pos2", "setstart", "setend", "title", "difficulty", "dynamic", "deploy", "undeploy", "addforkpoint", "delforkpoint", "save", "delete", "reload"));
+            return filter(args[0], Arrays.asList("create", "edit", "exit", "particles", "sound", "pos1", "pos2", "setstart", "setend", "title", "difficulty", "dynamic", "deploy", "undeploy", "addforkpoint", "delforkpoint", "setendtier", "save", "delete", "reload"));
         }
         if (args.length == 3 && args[0].equalsIgnoreCase("create")) {
             return filter(args[2], Arrays.asList("level", "fork", "globalstart", "globalend", "branchend"));
+        }
+        if (args.length == 2 && args[0].equalsIgnoreCase("setendtier")) {
+            return filter(args[1], Arrays.asList("easy", "normal", "hard"));
         }
         if (args.length == 2 && args[0].equalsIgnoreCase("difficulty")) {
             return filter(args[1], Arrays.asList("easy", "normal", "hard", "extreme"));

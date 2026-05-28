@@ -25,6 +25,7 @@ public class SessionManager {
     private final MapManager mapManager;
     private final DynamicService dynamicService;
     private final Map<UUID, ParkourSession> sessions = new HashMap<>();
+    private final Map<UUID, RunProgress> runProgresses = new HashMap<>();
 
     public SessionManager(SITParkourWarrior plugin, MapManager mapManager, DynamicService dynamicService) {
         this.plugin = plugin;
@@ -135,6 +136,41 @@ public class SessionManager {
         session.resetTimer();
     }
 
+    // ---- Full-course timing (GLOBAL_START → GLOBAL_END) ----
+
+    public void startFullCourse(UUID playerId) {
+        runProgresses.put(playerId, new RunProgress(System.currentTimeMillis()));
+    }
+
+    public RunProgress getRunProgress(UUID playerId) {
+        return runProgresses.get(playerId);
+    }
+
+    public void removeRunProgress(UUID playerId) {
+        runProgresses.remove(playerId);
+    }
+
+    public void clearAllRunProgresses() {
+        runProgresses.clear();
+    }
+
+    /**
+     * Settle full-course timing and display result.
+     * @return true if a run was settled, false if no active run progress.
+     */
+    public boolean finishFullCourse(Player player) {
+        RunProgress progress = runProgresses.remove(player.getUniqueId());
+        if (progress == null) {
+            return false;
+        }
+        long elapsedMs = System.currentTimeMillis() - progress.getStartTimestamp();
+        double seconds = elapsedMs / 1000.0;
+        Msg.send(player, "恭喜完成全程！总用时：" + String.format("%.2f", seconds) + " 秒。");
+        return true;
+    }
+
+    // ---- Session lifecycle ----
+
     public void endSessionsForMap(String mapId) {
         if (mapId == null) {
             return;
@@ -179,6 +215,7 @@ public class SessionManager {
                 sessions.remove(playerId);
             }
         }
+        runProgresses.clear();
     }
 
     public void teleportToStart(Player player) {

@@ -51,20 +51,62 @@ public class SessionManager {
         }
 
         Region region = deployment.getRegion();
-        Location start = resolveLocationWorld(deployment.getStart(), region);
-        Location end = resolveLocationWorld(deployment.getEnd(), region);
-        if (start == null || end == null || region == null) {
-            Msg.send(player, "关卡配置不完整（需要区域、起点、终点）。");
+        if (region == null) {
+            Msg.send(player, "关卡配置不完整（需要区域）。");
             return false;
+        }
+
+        NodeType nodeType = map.getNodeType();
+        Location checkpoint = null;
+
+        switch (nodeType) {
+            case LEVEL: {
+                Location start = resolveLocationWorld(deployment.getStart(), region);
+                Location end = resolveLocationWorld(deployment.getEnd(), region);
+                if (start == null || end == null) {
+                    Msg.send(player, "关卡配置不完整（需要起点、终点）。");
+                    return false;
+                }
+                checkpoint = start.clone();
+                break;
+            }
+            case GLOBAL_START: {
+                Location gsStart = resolveLocationWorld(deployment.getStart(), region);
+                if (gsStart == null) {
+                    Msg.send(player, "关卡配置不完整（需要起点）。");
+                    return false;
+                }
+                checkpoint = gsStart.clone();
+                break;
+            }
+            case FORK: {
+                Location best = null;
+                double bestDist = Double.MAX_VALUE;
+                for (PointLocation fp : deployment.getForkBranchPoints()) {
+                    Location loc = resolveLocationWorld(fp, region);
+                    if (loc == null) continue;
+                    double d = player.getLocation().distance(loc);
+                    if (d < bestDist) { bestDist = d; best = loc; }
+                }
+                if (best == null) {
+                    Msg.send(player, "关卡配置不完整（需要岔路点位）。");
+                    return false;
+                }
+                checkpoint = best.clone();
+                break;
+            }
+            default:
+                Msg.send(player, "此节点类型无法直接开始。");
+                return false;
         }
 
         ParkourSession session = new ParkourSession(player.getUniqueId(), map.getId(), deployment.getId(), System.currentTimeMillis());
         session.setDeathLineY(region.getMinY());
-        session.setCheckpoint(start.clone());
+        session.setCheckpoint(checkpoint);
         sessions.put(player.getUniqueId(), session);
         dynamicService.onPlayerJoin(map, deployment);
 
-        if (map.getNodeType() == NodeType.LEVEL && region.contains(player.getLocation())) {
+        if (nodeType == NodeType.LEVEL && region.contains(player.getLocation())) {
             session.startTimer(System.currentTimeMillis());
             session.setInsideRegion(true);
             session.setInsideStart(false);
@@ -76,7 +118,7 @@ public class SessionManager {
             if (current == null) {
                 return;
             }
-            if (map.getNodeType() == NodeType.LEVEL && region.contains(player.getLocation())) {
+            if (nodeType == NodeType.LEVEL && region.contains(player.getLocation())) {
                 current.setInsideRegion(true);
                 current.setInsideStart(false);
                 current.setPendingTitleAtStart(true);
@@ -247,7 +289,7 @@ public class SessionManager {
         player.teleport(start);
     }
 
-    private void cleanupPlayerEquipment(Player player) {
+    public void cleanupPlayerEquipment(Player player) {
         player.getActivePotionEffects().forEach(effect -> player.removePotionEffect(effect.getType()));
         player.getInventory().setBoots(null);
     }
@@ -307,6 +349,36 @@ public class SessionManager {
             updated.setInsideRegion(true);
             updated.setPendingTitleAtStart(true);
         }
+    }
+
+    /**
+     * BRANCH_END teleport: switch the player's session to the bound FORK
+     * deployment and teleport them to the fork-point location. If the player
+     * has no current session a fresh one is created.
+     */
+    public void handoffToFork(Player player, ParkourMap forkMap, Deployment forkDeployment, Location forkPoint) {
+        ParkourSession old = sessions.get(player.getUniqueId());
+        ParkourSession updated = new ParkourSession(
+                player.getUniqueId(),
+                forkMap.getId(),
+                forkDeployment.getId(),
+                System.currentTimeMillis());
+        updated.setCheckpoint(forkPoint.clone());
+        Region forkRegion = forkDeployment.getRegion();
+        if (forkRegion != null) {
+            updated.setDeathLineY(forkRegion.getMinY());
+        }
+        updated.getVisitedForkPoints().add(forkPoint.clone());
+        if (old != null) {
+            updated.setInitialForkFallback(old.getCheckpoint());
+        }
+        sessions.put(player.getUniqueId(), updated);
+        dynamicService.onPlayerJoin(forkMap, forkDeployment);
+
+        updated.setSkipResetAtStartOnce(true);
+        updated.setInsideRegion(true);
+        updated.setInsideStart(false);
+        teleportToStartLocation(player, forkPoint.clone());
     }
 
     /**

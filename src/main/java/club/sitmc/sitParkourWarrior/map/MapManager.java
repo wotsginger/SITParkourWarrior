@@ -100,6 +100,10 @@ public class MapManager {
 
         saveLocation(config, "start", map.getStart());
         saveLocation(config, "end", map.getEnd());
+        saveLocation(config, "start_pos1", map.getStartPos1());
+        saveLocation(config, "start_pos2", map.getStartPos2());
+        saveLocation(config, "end_pos1", map.getEndPos1());
+        saveLocation(config, "end_pos2", map.getEndPos2());
 
         DynamicData dynamicData = map.getDynamicData();
         ConfigurationSection dynamicSection = config.createSection("dynamic");
@@ -127,6 +131,10 @@ public class MapManager {
                 }
                 saveLocation(deploymentSection, "start", deployment.getStart());
                 saveLocation(deploymentSection, "end", deployment.getEnd());
+                saveLocation(deploymentSection, "start_pos1", deployment.getStartPos1());
+                saveLocation(deploymentSection, "start_pos2", deployment.getStartPos2());
+                saveLocation(deploymentSection, "end_pos1", deployment.getEndPos1());
+                saveLocation(deploymentSection, "end_pos2", deployment.getEndPos2());
                 List<PointLocation> forkPoints = deployment.getForkBranchPoints();
                 if (!forkPoints.isEmpty()) {
                     ConfigurationSection forkSection = deploymentSection.createSection("fork_branch_points");
@@ -219,6 +227,10 @@ public class MapManager {
 
                 map.setStart(loadLocation(config, "start"));
                 map.setEnd(loadLocation(config, "end"));
+                map.setStartPos1(loadLocation(config, "start_pos1"));
+                map.setStartPos2(loadLocation(config, "start_pos2"));
+                map.setEndPos1(loadLocation(config, "end_pos1"));
+                map.setEndPos2(loadLocation(config, "end_pos2"));
 
                 ConfigurationSection dynamicSection = config.getConfigurationSection("dynamic");
                 if (dynamicSection != null) {
@@ -267,8 +279,13 @@ public class MapManager {
                                 }
                             }
                         }
+                        PointLocation depStartPos1 = loadLocation(deploymentSection, "start_pos1");
+                        PointLocation depStartPos2 = loadLocation(deploymentSection, "start_pos2");
+                        PointLocation depEndPos1   = loadLocation(deploymentSection, "end_pos1");
+                        PointLocation depEndPos2   = loadLocation(deploymentSection, "end_pos2");
                         if (depRegion != null) {
-                            map.addDeployment(new Deployment(deploymentId, depRegion, depStart, depEnd, depForkPoints));
+                            map.addDeployment(new Deployment(deploymentId, depRegion, depStart, depEnd, depForkPoints,
+                                    depStartPos1, depStartPos2, depEndPos1, depEndPos2));
                         }
                     }
                 }

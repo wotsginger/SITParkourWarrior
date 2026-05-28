@@ -1,6 +1,8 @@
 package club.sitmc.sitParkourWarrior;
 
 import club.sitmc.sitParkourWarrior.command.DPCommand;
+import club.sitmc.sitParkourWarrior.config.PkwWorldManager;
+import club.sitmc.sitParkourWarrior.course.CourseLayoutAnalyzer;
 import club.sitmc.sitParkourWarrior.listener.PlayerDeathListener;
 import club.sitmc.sitParkourWarrior.listener.PlayerMoveListener;
 import club.sitmc.sitParkourWarrior.listener.PlayerQuitListener;
@@ -20,6 +22,8 @@ public final class SITParkourWarrior extends JavaPlugin {
     private DynamicService dynamicService;
     private ParticleService particleService;
     private SelectionManager selectionManager;
+    private CourseLayoutAnalyzer courseLayoutAnalyzer;
+    private PkwWorldManager pkwWorldManager;
 
     @Override
     public void onEnable() {
@@ -28,17 +32,19 @@ public final class SITParkourWarrior extends JavaPlugin {
         this.particleService = new ParticleService(this);
         this.selectionManager = new SelectionManager(mapManager, particleService);
         this.sessionManager = new SessionManager(this, mapManager, dynamicService);
+        this.pkwWorldManager = new PkwWorldManager(getDataFolder());
+        this.courseLayoutAnalyzer = new CourseLayoutAnalyzer(mapManager, pkwWorldManager, getDataFolder());
         this.particleService.start(selectionManager);
         mapManager.loadAll();
         dynamicService.startAllDeployed();
 
-        getServer().getPluginManager().registerEvents(new PlayerMoveListener(sessionManager, mapManager, selectionManager), this);
+        getServer().getPluginManager().registerEvents(new PlayerMoveListener(sessionManager, mapManager, selectionManager, pkwWorldManager, courseLayoutAnalyzer), this);
         getServer().getPluginManager().registerEvents(new PlayerQuitListener(sessionManager), this);
         getServer().getPluginManager().registerEvents(new PlayerDeathListener(), this);
         getServer().getPluginManager().registerEvents(new PlayerRespawnListener(sessionManager), this);
         getServer().getPluginManager().registerEvents(new SelectionToolListener(selectionManager), this);
 
-        DPCommand command = new DPCommand(mapManager, sessionManager, selectionManager, dynamicService);
+        DPCommand command = new DPCommand(mapManager, sessionManager, selectionManager, dynamicService, courseLayoutAnalyzer, pkwWorldManager);
         if (getCommand("sitpkw") != null) {
             getCommand("sitpkw").setExecutor(command);
             getCommand("sitpkw").setTabCompleter(command);

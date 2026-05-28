@@ -1,5 +1,7 @@
 package club.sitmc.sitParkourWarrior.command;
 
+import club.sitmc.sitParkourWarrior.config.PkwWorldManager;
+import club.sitmc.sitParkourWarrior.course.CourseLayoutAnalyzer;
 import club.sitmc.sitParkourWarrior.map.Deployment;
 import club.sitmc.sitParkourWarrior.map.Difficulty;
 import club.sitmc.sitParkourWarrior.map.DynamicData;
@@ -14,6 +16,7 @@ import club.sitmc.sitParkourWarrior.map.SelectionManager;
 import club.sitmc.sitParkourWarrior.map.SchematicService;
 import club.sitmc.sitParkourWarrior.session.SessionManager;
 import club.sitmc.sitParkourWarrior.util.Msg;
+import org.bukkit.Bukkit;
 import org.bukkit.Location;
 import org.bukkit.Material;
 import org.bukkit.command.Command;
@@ -35,13 +38,17 @@ public class DPCommand implements CommandExecutor, TabCompleter {
     private final SessionManager sessionManager;
     private final SelectionManager selectionManager;
     private final DynamicService dynamicService;
+    private final CourseLayoutAnalyzer courseLayoutAnalyzer;
+    private final PkwWorldManager pkwWorldManager;
     private final SchematicService schematicService = new SchematicService();
 
-    public DPCommand(MapManager mapManager, SessionManager sessionManager, SelectionManager selectionManager, DynamicService dynamicService) {
+    public DPCommand(MapManager mapManager, SessionManager sessionManager, SelectionManager selectionManager, DynamicService dynamicService, CourseLayoutAnalyzer courseLayoutAnalyzer, PkwWorldManager pkwWorldManager) {
         this.mapManager = mapManager;
         this.sessionManager = sessionManager;
         this.selectionManager = selectionManager;
         this.dynamicService = dynamicService;
+        this.courseLayoutAnalyzer = courseLayoutAnalyzer;
+        this.pkwWorldManager = pkwWorldManager;
     }
 
     @Override
@@ -67,9 +74,9 @@ public class DPCommand implements CommandExecutor, TabCompleter {
             case "pos2":
                 return handlePos(sender, false);
             case "setstart":
-                return handleSetStart(sender);
+                return handleSetStart(sender, args);
             case "setend":
-                return handleSetEnd(sender);
+                return handleSetEnd(sender, args);
             case "title":
                 return handleTitle(sender, args);
             case "difficulty":
@@ -92,6 +99,8 @@ public class DPCommand implements CommandExecutor, TabCompleter {
                 return handleSetEndTier(sender, args);
             case "reload":
                 return handleReload(sender);
+            case "pkwworld":
+                return handlePkwWorld(sender, args);
             default:
                 Msg.send(sender, "未知子命令。输入 /sitpkw 查看用法。");
                 return true;
@@ -107,8 +116,8 @@ public class DPCommand implements CommandExecutor, TabCompleter {
         Msg.send(sender, "/sitpkw sound <on|off>      设置关卡破坏音效");
         Msg.send(sender, "/sitpkw pos1|pos2    设置选区角点");
         Msg.send(sender, "/sitpkw save <序列id> 保存当前选区为动态状态");
-        Msg.send(sender, "/sitpkw setstart     设置起点");
-        Msg.send(sender, "/sitpkw setend       设置终点");
+        Msg.send(sender, "/sitpkw setstart [pos1|pos2]  设置起点（或起点区域的角点）");
+        Msg.send(sender, "/sitpkw setend [pos1|pos2]    设置终点（或终点区域的角点）");
         Msg.send(sender, "/sitpkw title <文本>  设置标题");
         Msg.send(sender, "/sitpkw difficulty <easy|normal|hard|extreme> 设置难度");
         Msg.send(sender, "/sitpkw dynamic addstate <文件名> [间隔]  添加动态状态");
@@ -121,6 +130,9 @@ public class DPCommand implements CommandExecutor, TabCompleter {
         Msg.send(sender, "/sitpkw delforkpoint <序号>            删除当前编辑FORK节点的分支点");
         Msg.send(sender, "/sitpkw setendtier <easy|normal|hard>  设置全局终点难度类型");
         Msg.send(sender, "/sitpkw delete <id>                    删除关卡");
+        Msg.send(sender, "/sitpkw pkwworld add [世界名]          加入 PKW 世界列表（省略则为当前世界）");
+        Msg.send(sender, "/sitpkw pkwworld remove [世界名]       移出 PKW 世界列表（省略则为当前世界）");
+        Msg.send(sender, "/sitpkw pkwworld list                  列出所有 PKW 世界");
         Msg.send(sender, "/sitpkw reload                         重载配置");
     }
 
@@ -252,7 +264,7 @@ public class DPCommand implements CommandExecutor, TabCompleter {
         return true;
     }
 
-    private boolean handleSetStart(CommandSender sender) {
+    private boolean handleSetStart(CommandSender sender, String[] args) {
         if (!(sender instanceof Player player)) {
             Msg.send(sender, "只能由玩家执行。");
             return true;
@@ -262,13 +274,27 @@ public class DPCommand implements CommandExecutor, TabCompleter {
             Msg.send(sender, "请先 /sitpkw create <id> 或 /sitpkw edit <id>。");
             return true;
         }
-        map.setStart(player.getLocation());
-        mapManager.saveMap(map);
-        Msg.send(sender, "起点已设置。");
-        return true;
+        String zone = args.length >= 2 ? args[1].toLowerCase() : "";
+        switch (zone) {
+            case "pos1":
+                map.setStartPos1(PointLocation.fromLocation(player.getLocation()));
+                mapManager.saveMap(map);
+                Msg.send(sender, "起点区域角点1已设置。");
+                return true;
+            case "pos2":
+                map.setStartPos2(PointLocation.fromLocation(player.getLocation()));
+                mapManager.saveMap(map);
+                Msg.send(sender, "起点区域角点2已设置。");
+                return true;
+            default:
+                map.setStart(player.getLocation());
+                mapManager.saveMap(map);
+                Msg.send(sender, "起点已设置" + (args.length >= 2 ? "（未知参数 \"" + args[1] + "\"，已设为起点中心点）" : "。"));
+                return true;
+        }
     }
 
-    private boolean handleSetEnd(CommandSender sender) {
+    private boolean handleSetEnd(CommandSender sender, String[] args) {
         if (!(sender instanceof Player player)) {
             Msg.send(sender, "只能由玩家执行。");
             return true;
@@ -278,10 +304,24 @@ public class DPCommand implements CommandExecutor, TabCompleter {
             Msg.send(sender, "请先 /sitpkw create <id> 或 /sitpkw edit <id>。");
             return true;
         }
-        map.setEnd(player.getLocation());
-        mapManager.saveMap(map);
-        Msg.send(sender, "终点已设置。");
-        return true;
+        String zone = args.length >= 2 ? args[1].toLowerCase() : "";
+        switch (zone) {
+            case "pos1":
+                map.setEndPos1(PointLocation.fromLocation(player.getLocation()));
+                mapManager.saveMap(map);
+                Msg.send(sender, "终点区域角点1已设置。");
+                return true;
+            case "pos2":
+                map.setEndPos2(PointLocation.fromLocation(player.getLocation()));
+                mapManager.saveMap(map);
+                Msg.send(sender, "终点区域角点2已设置。");
+                return true;
+            default:
+                map.setEnd(player.getLocation());
+                mapManager.saveMap(map);
+                Msg.send(sender, "终点已设置" + (args.length >= 2 ? "（未知参数 \"" + args[1] + "\"，已设为终点中心点）" : "。"));
+                return true;
+        }
     }
 
     private boolean handleTitle(CommandSender sender, String[] args) {
@@ -581,6 +621,12 @@ public class DPCommand implements CommandExecutor, TabCompleter {
                 break;
         }
 
+        // Translate optional custom zone corners (null-safe).
+        PointLocation newStartPos1 = translatePointOrNull(map.getStartPos1(), worldName, offsetX, offsetY, offsetZ);
+        PointLocation newStartPos2 = translatePointOrNull(map.getStartPos2(), worldName, offsetX, offsetY, offsetZ);
+        PointLocation newEndPos1   = translatePointOrNull(map.getEndPos1(),   worldName, offsetX, offsetY, offsetZ);
+        PointLocation newEndPos2   = translatePointOrNull(map.getEndPos2(),   worldName, offsetX, offsetY, offsetZ);
+
         // ---- emerald marker: only for types that have an end ----
         if (newEnd != null) {
             Location endLoc = newEnd.toLocation();
@@ -589,7 +635,8 @@ public class DPCommand implements CommandExecutor, TabCompleter {
             }
         }
 
-        Deployment deployment = new Deployment(UUID.randomUUID().toString(), newRegion, newStart, newEnd, newForkPoints);
+        Deployment deployment = new Deployment(UUID.randomUUID().toString(), newRegion, newStart, newEnd,
+                newForkPoints, newStartPos1, newStartPos2, newEndPos1, newEndPos2);
         map.addDeployment(deployment);
 
         // Schematic paste (region-based, works for all types).
@@ -604,6 +651,9 @@ public class DPCommand implements CommandExecutor, TabCompleter {
         dynamicService.startForDeployment(map, deployment);
 
         mapManager.saveMap(map);
+        if (pkwWorldManager.isPkwWorld(worldName)) {
+            courseLayoutAnalyzer.recomputeWorld(worldName);
+        }
         Msg.send(sender, "已放出关卡: " + map.getId());
         return true;
     }
@@ -615,6 +665,11 @@ public class DPCommand implements CommandExecutor, TabCompleter {
                 template.getZ() + offsetZ,
                 template.getYaw(),
                 template.getPitch());
+    }
+
+    private PointLocation translatePointOrNull(PointLocation template, String worldName, int offsetX, int offsetY, int offsetZ) {
+        if (template == null) return null;
+        return translatePoint(template, worldName, offsetX, offsetY, offsetZ);
     }
 
     private boolean handleUndeploy(CommandSender sender, String[] args) {
@@ -648,6 +703,10 @@ public class DPCommand implements CommandExecutor, TabCompleter {
         schematicService.clearRegion(deployment.getRegion());
         map.removeDeployment(deployment.getId());
         mapManager.saveMap(map);
+        String depWorld = deployment.getRegion().getWorldName();
+        if (pkwWorldManager.isPkwWorld(depWorld)) {
+            courseLayoutAnalyzer.recomputeWorld(depWorld);
+        }
         Msg.send(sender, "已收回关卡: " + map.getId());
         return true;
     }
@@ -774,14 +833,78 @@ public class DPCommand implements CommandExecutor, TabCompleter {
         dynamicService.stopAll();
         mapManager.loadAll();
         dynamicService.startAllDeployed();
+        courseLayoutAnalyzer.recomputeAllPkwWorlds();
         Msg.send(sender, "已重载关卡配置。");
         return true;
+    }
+
+    private boolean handlePkwWorld(CommandSender sender, String[] args) {
+        if (args.length < 2) {
+            Msg.send(sender, "用法: /sitpkw pkwworld <add|remove|list> [世界名]");
+            return true;
+        }
+        String action = args[1].toLowerCase();
+        switch (action) {
+            case "add": {
+                String worldName;
+                if (args.length >= 3) {
+                    worldName = args[2];
+                } else if (sender instanceof Player player) {
+                    worldName = player.getWorld().getName();
+                } else {
+                    Msg.send(sender, "控制台必须指定世界名: /sitpkw pkwworld add <世界名>");
+                    return true;
+                }
+                if (Bukkit.getWorld(worldName) == null) {
+                    Msg.send(sender, "世界 " + worldName + " 不存在或未加载。");
+                    return true;
+                }
+                boolean added = pkwWorldManager.add(worldName);
+                if (added) {
+                    courseLayoutAnalyzer.recomputeWorld(worldName);
+                }
+                Msg.send(sender, added ? "已将 " + worldName + " 加入 PKW 世界列表。" : worldName + " 已在 PKW 世界列表中。");
+                return true;
+            }
+            case "remove": {
+                String worldName;
+                if (args.length >= 3) {
+                    worldName = args[2];
+                } else if (sender instanceof Player player) {
+                    worldName = player.getWorld().getName();
+                } else {
+                    Msg.send(sender, "控制台必须指定世界名: /sitpkw pkwworld remove <世界名>");
+                    return true;
+                }
+                boolean removed = pkwWorldManager.remove(worldName);
+                if (removed) {
+                    courseLayoutAnalyzer.removeWorld(worldName);
+                }
+                Msg.send(sender, removed ? "已将 " + worldName + " 移出 PKW 世界列表。" : worldName + " 不在 PKW 世界列表中。");
+                return true;
+            }
+            case "list": {
+                java.util.Set<String> worlds = pkwWorldManager.getWorlds();
+                if (worlds.isEmpty()) {
+                    Msg.send(sender, "当前没有 PKW 世界。");
+                } else {
+                    Msg.send(sender, "PKW 世界列表:");
+                    for (String w : worlds) {
+                        Msg.send(sender, "  - " + w);
+                    }
+                }
+                return true;
+            }
+            default:
+                Msg.send(sender, "用法: /sitpkw pkwworld <add|remove|list> [世界名]");
+                return true;
+        }
     }
 
     @Override
     public List<String> onTabComplete(CommandSender sender, Command command, String alias, String[] args) {
         if (args.length == 1) {
-            return filter(args[0], Arrays.asList("create", "edit", "exit", "particles", "sound", "pos1", "pos2", "setstart", "setend", "title", "difficulty", "dynamic", "deploy", "undeploy", "addforkpoint", "delforkpoint", "setendtier", "save", "delete", "reload"));
+            return filter(args[0], Arrays.asList("create", "edit", "exit", "particles", "sound", "pos1", "pos2", "setstart", "setend", "title", "difficulty", "dynamic", "deploy", "undeploy", "addforkpoint", "delforkpoint", "setendtier", "save", "delete", "pkwworld", "reload"));
         }
         if (args.length == 3 && args[0].equalsIgnoreCase("create")) {
             return filter(args[2], Arrays.asList("level", "fork", "globalstart", "globalend", "branchend"));
@@ -795,12 +918,26 @@ public class DPCommand implements CommandExecutor, TabCompleter {
         if (args.length == 2 && args[0].equalsIgnoreCase("dynamic")) {
             return filter(args[1], Arrays.asList("addstate", "delstate", "interval", "list"));
         }
+        if (args.length == 2 && (args[0].equalsIgnoreCase("setstart") || args[0].equalsIgnoreCase("setend"))) {
+            return filter(args[1], Arrays.asList("pos1", "pos2"));
+        }
         if (args.length == 2 && (args[0].equalsIgnoreCase("particles") || args[0].equalsIgnoreCase("sound"))) {
             return filter(args[1], Arrays.asList("on", "off"));
         }
         if (args.length == 2 && (args[0].equalsIgnoreCase("deploy")
                 || args[0].equalsIgnoreCase("edit") || args[0].equalsIgnoreCase("delete"))) {
             return filter(args[1], new ArrayList<>(mapManager.getMaps().keySet()));
+        }
+        if (args.length == 2 && args[0].equalsIgnoreCase("pkwworld")) {
+            return filter(args[1], Arrays.asList("add", "remove", "list"));
+        }
+        if (args.length == 3 && args[0].equalsIgnoreCase("pkwworld")
+                && (args[1].equalsIgnoreCase("add") || args[1].equalsIgnoreCase("remove"))) {
+            List<String> worldNames = new ArrayList<>();
+            for (org.bukkit.World w : Bukkit.getWorlds()) {
+                worldNames.add(w.getName());
+            }
+            return filter(args[2], worldNames);
         }
         if (args.length == 2 && args[0].equalsIgnoreCase("delforkpoint") && sender instanceof Player player) {
             ParkourMap map = selectionManager.getEditingMap(player);

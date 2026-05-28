@@ -13,6 +13,10 @@ public class ParkourMap {
     private Region region;
     private PointLocation start;
     private PointLocation end;
+    private PointLocation startPos1;
+    private PointLocation startPos2;
+    private PointLocation endPos1;
+    private PointLocation endPos2;
     private final DynamicData dynamicData = new DynamicData();
     private boolean deployed;
     private boolean particlesEnabled = true;
@@ -184,5 +188,69 @@ public class ParkourMap {
 
     public List<PointLocation> getForkBranchPoints() {
         return forkBranchPoints;
+    }
+
+    public PointLocation getStartPos1() { return startPos1; }
+    public void setStartPos1(PointLocation p) { this.startPos1 = p; }
+    public PointLocation getStartPos2() { return startPos2; }
+    public void setStartPos2(PointLocation p) { this.startPos2 = p; }
+    public PointLocation getEndPos1()   { return endPos1; }
+    public void setEndPos1(PointLocation p)   { this.endPos1 = p; }
+    public PointLocation getEndPos2()   { return endPos2; }
+    public void setEndPos2(PointLocation p)   { this.endPos2 = p; }
+
+    /** True if both pos1 and pos2 are set for start. */
+    public boolean hasCustomStartZone() {
+        return startPos1 != null && startPos2 != null && startPos1.hasWorld() && startPos2.hasWorld();
+    }
+
+    /** True if both pos1 and pos2 are set for end. */
+    public boolean hasCustomEndZone() {
+        return endPos1 != null && endPos2 != null && endPos1.hasWorld() && endPos2.hasWorld();
+    }
+
+    /**
+     * Check if a location falls within the start zone.
+     * Uses AABB if pos1/pos2 are set, otherwise 3x3x3 around the start center.
+     */
+    public boolean isInStartZone(Location loc) {
+        if (!hasCustomStartZone()) {
+            Location s = getStartLocation();
+            if (s == null) return false;
+            return isNear(loc, s);
+        }
+        return inAabb(loc, startPos1, startPos2);
+    }
+
+    /**
+     * Check if a location falls within the end zone.
+     * Uses AABB if pos1/pos2 are set, otherwise 3x3x3 around the end center.
+     */
+    public boolean isInEndZone(Location loc) {
+        if (!hasCustomEndZone()) {
+            Location e = getEndLocation();
+            if (e == null) return false;
+            return isNear(loc, e);
+        }
+        return inAabb(loc, endPos1, endPos2);
+    }
+
+    private static boolean isNear(Location a, Location b) {
+        if (a.getWorld() == null || b.getWorld() == null) return false;
+        if (!a.getWorld().getName().equals(b.getWorld().getName())) return false;
+        return Math.abs(a.getBlockX() - b.getBlockX()) <= 1
+                && Math.abs(a.getBlockY() - b.getBlockY()) <= 1
+                && Math.abs(a.getBlockZ() - b.getBlockZ()) <= 1;
+    }
+
+    private static boolean inAabb(Location loc, PointLocation p1, PointLocation p2) {
+        int minX = Math.min(p1.getBlockX(), p2.getBlockX());
+        int maxX = Math.max(p1.getBlockX(), p2.getBlockX());
+        int minY = Math.min(p1.getBlockY(), p2.getBlockY());
+        int maxY = Math.max(p1.getBlockY(), p2.getBlockY());
+        int minZ = Math.min(p1.getBlockZ(), p2.getBlockZ());
+        int maxZ = Math.max(p1.getBlockZ(), p2.getBlockZ());
+        int bx = loc.getBlockX(), by = loc.getBlockY(), bz = loc.getBlockZ();
+        return bx >= minX && bx <= maxX && by >= minY && by <= maxY && bz >= minZ && bz <= maxZ;
     }
 }

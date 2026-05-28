@@ -370,7 +370,7 @@ public class PlayerMoveListener implements Listener {
 
     private boolean isLava(Location loc) {
         Material type = loc.getBlock().getType();
-        return type == Material.LAVA || type == Material.FLOWING_LAVA;
+        return type == Material.LAVA;
     }
 
     private boolean isNear(Location a, Location b) {

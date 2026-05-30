@@ -16,3 +16,5 @@ commands:
 permissions:
   dynamicparkour.admin:
     default: op
+  dynamicparkour.play:
+    default: true

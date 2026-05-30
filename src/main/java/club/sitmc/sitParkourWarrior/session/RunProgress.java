@@ -1,19 +1,174 @@
 package club.sitmc.sitParkourWarrior.session;
 
+import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
+import java.util.Map;
+import java.util.Set;
+
 /**
- * Independent full-course timing state that survives node handoffs.
- * ParkourSession is replaced on each handoff; this object lives in
- * SessionManager and persists across the entire run from GLOBAL_START
- * to GLOBAL_END.
+ * Per-player full-course run state. Supports pausable cumulative timing
+ * (for disconnect/reconnect) and in-run medal tracking for both COUNTUP
+ * (simple count) and COUNTDOWN (categorized: stone/bronze/silver/gold).
  */
 public class RunProgress {
-    private final long startTimestamp;
 
-    public RunProgress(long startTimestamp) {
-        this.startTimestamp = startTimestamp;
+    private long elapsedMs;
+    private long segmentStart;
+    private boolean running;
+
+    // Last visited FORK (persists across handoffs, used by fork-return item)
+    private String lastForkMapId;
+    private String lastForkDepId;
+    private org.bukkit.Location lastForkPoint;
+
+    // COUNTUP medals
+    private int medals;
+
+    // COUNTDOWN categorized medals
+    private int stoneCount;
+    private int bronzeCount;
+    private int silverCount;
+    private int goldCount;
+
+    // Map tracking the medal type awarded per level (key = "mapId:deploymentId" → medalType)
+    // This replaces the old claimedLevels set with type-aware tracking.
+    private final java.util.Map<String, String> claimedLevels = new LinkedHashMap<>();
+
+    public RunProgress() {
+        this.segmentStart = System.currentTimeMillis();
+        this.elapsedMs = 0;
+        this.running = true;
+        this.medals = 0;
+        this.stoneCount = 0;
+        this.bronzeCount = 0;
+        this.silverCount = 0;
+        this.goldCount = 0;
     }
 
-    public long getStartTimestamp() {
-        return startTimestamp;
+    // ---- timing ----
+
+    public long getElapsedMs() {
+        if (running) {
+            return elapsedMs + Math.max(0, System.currentTimeMillis() - segmentStart);
+        }
+        return elapsedMs;
+    }
+
+    public boolean isRunning() {
+        return running;
+    }
+
+    public void pause() {
+        if (running) {
+            elapsedMs += Math.max(0, System.currentTimeMillis() - segmentStart);
+            running = false;
+        }
+    }
+
+    public void resume() {
+        if (!running) {
+            segmentStart = System.currentTimeMillis();
+            running = true;
+        }
+    }
+
+    // ---- COUNTUP medals ----
+
+    public int getMedals() {
+        return medals;
+    }
+
+    /** Award a COUNTUP medal. Returns true if newly claimed. */
+    public boolean claimLevel(String mapId, String deploymentId) {
+        String key = mapId + ":" + deploymentId;
+        if (!claimedLevels.containsKey(key)) {
+            claimedLevels.put(key, "countup");
+            medals++;
+            return true;
+        }
+        return false;
+    }
+
+    public void addEndTierMedals(int bonus) {
+        medals += bonus;
+    }
+
+    // ---- Last visited FORK ----
+
+    public void setLastFork(String mapId, String depId, org.bukkit.Location point) {
+        this.lastForkMapId = mapId;
+        this.lastForkDepId = depId;
+        this.lastForkPoint = point != null ? point.clone() : null;
+    }
+
+    public String getLastForkMapId()   { return lastForkMapId; }
+    public String getLastForkDepId()   { return lastForkDepId; }
+    public org.bukkit.Location getLastForkPoint() { return lastForkPoint; }
+
+    // ---- COUNTDOWN categorized medals ----
+
+    /**
+     * Award a COUNTDOWN medal of a specific type. Returns the medal type if
+     * newly claimed, or null if this level was already claimed.
+     */
+    public String claimLevelByType(String mapId, String deploymentId, String medalType) {
+        String key = mapId + ":" + deploymentId;
+        if (!claimedLevels.containsKey(key)) {
+            claimedLevels.put(key, medalType);
+            switch (medalType) {
+                case "stone":  stoneCount++;  break;
+                case "bronze": bronzeCount++; break;
+                case "silver": silverCount++; break;
+                case "gold":   goldCount++;   break;
+            }
+            return medalType;
+        }
+        return null;
+    }
+
+    public int getStoneCount()  { return stoneCount; }
+    public int getBronzeCount() { return bronzeCount; }
+    public int getSilverCount() { return silverCount; }
+    public int getGoldCount()   { return goldCount; }
+
+    // ---- persistence helpers ----
+
+    public java.util.Map<String, String> getClaimedLevelsWithTypes() {
+        return claimedLevels;
+    }
+
+    /**
+     * Restore state from a saved run.
+     * For COUNTUP: claimedLevels values are "countup".
+     * For COUNTDOWN: claimedLevels values are medal types (stone/bronze/silver/gold).
+     */
+    public void restoreFull(long elapsedMs, int medals, int stone, int bronze, int silver, int gold,
+                            java.util.Map<String, String> claimed) {
+        this.elapsedMs = elapsedMs;
+        this.medals = medals;
+        this.stoneCount = stone;
+        this.bronzeCount = bronze;
+        this.silverCount = silver;
+        this.goldCount = gold;
+        this.segmentStart = System.currentTimeMillis();
+        this.running = true;
+        this.claimedLevels.clear();
+        if (claimed != null) {
+            this.claimedLevels.putAll(claimed);
+        }
+    }
+
+    /** Backward-compat restore for COUNTUP (old format). */
+    public void restore(long elapsedMs, int medals, java.util.List<String> claimed) {
+        java.util.Map<String, String> map = new LinkedHashMap<>();
+        if (claimed != null) {
+            for (String c : claimed) map.put(c, "countup");
+        }
+        restoreFull(elapsedMs, medals, 0, 0, 0, 0, map);
+    }
+
+    /** Set elapsed ms directly (for countdown timer restore without overwriting medals). */
+    public void setElapsedMs(long ms) {
+        this.elapsedMs = ms;
     }
 }

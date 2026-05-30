@@ -34,6 +34,9 @@ public class CourseLayoutAnalyzer {
     /** In-memory cache: worldName → list of branch bindings (for runtime queries). */
     private final java.util.Map<String, java.util.List<BranchBindingInfo>> branchBindingsByWorld = new LinkedHashMap<>();
 
+    /** In-memory cache: worldName → (mapId:deploymentId → LevelRoleInfo). */
+    private final java.util.Map<String, java.util.Map<String, LevelRoleInfo>> levelRoleCache = new LinkedHashMap<>();
+
     public CourseLayoutAnalyzer(MapManager mapManager, PkwWorldManager pkwWorldManager, File dataFolder) {
         this.mapManager = mapManager;
         this.pkwWorldManager = pkwWorldManager;
@@ -103,6 +106,15 @@ public class CourseLayoutAnalyzer {
                     bb.forkPoint.clone()));
         }
         branchBindingsByWorld.put(worldName, list);
+
+        java.util.Map<String, LevelRoleInfo> lrMap = new LinkedHashMap<>();
+        for (LevelEntry e : result.levels) {
+            lrMap.put(e.mapId + ":" + e.depId, new LevelRoleInfo(
+                    e.role, e.order,
+                    e.branchEndMapId, e.branchEndDepId,
+                    e.globalEndMapId, e.globalEndDepId, e.endTier));
+        }
+        levelRoleCache.put(worldName, lrMap);
     }
 
     // ---------------------------------------------------------------
@@ -630,6 +642,37 @@ public class CourseLayoutAnalyzer {
             this.forkMapId = forkMapId;
             this.forkDepId = forkDepId;
             this.forkPoint = forkPoint;
+        }
+    }
+
+    /**
+     * Look up a LEVEL's role from the in-memory cache.
+     */
+    public LevelRoleInfo getLevelRole(String worldName, String mapId, String deploymentId) {
+        java.util.Map<String, LevelRoleInfo> worldCache = levelRoleCache.get(worldName);
+        if (worldCache == null) return null;
+        return worldCache.get(mapId + ":" + deploymentId);
+    }
+
+    /**
+     * Public query type for a LEVEL's classification role.
+     */
+    public static class LevelRoleInfo {
+        public final String role;   // main / branch / final / unclassified
+        public final int order;     // 1/2/3 for branch, 0 otherwise
+        public final String branchEndMapId, branchEndDepId;
+        public final String globalEndMapId, globalEndDepId, endTier;
+
+        LevelRoleInfo(String role, int order,
+                      String branchEndMapId, String branchEndDepId,
+                      String globalEndMapId, String globalEndDepId, String endTier) {
+            this.role = role;
+            this.order = order;
+            this.branchEndMapId = branchEndMapId;
+            this.branchEndDepId = branchEndDepId;
+            this.globalEndMapId = globalEndMapId;
+            this.globalEndDepId = globalEndDepId;
+            this.endTier = endTier;
         }
     }
 

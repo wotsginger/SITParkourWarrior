@@ -1,7 +1,12 @@
 package club.sitmc.sitParkourWarrior.command;
 
+import club.sitmc.sitParkourWarrior.board.BoardData;
+import club.sitmc.sitParkourWarrior.board.BoardManager;
+import club.sitmc.sitParkourWarrior.config.CountdownScoringConfig;
 import club.sitmc.sitParkourWarrior.config.PkwWorldManager;
+import club.sitmc.sitParkourWarrior.config.TimingMode;
 import club.sitmc.sitParkourWarrior.course.CourseLayoutAnalyzer;
+import club.sitmc.sitParkourWarrior.records.RecordsManager;
 import club.sitmc.sitParkourWarrior.map.Deployment;
 import club.sitmc.sitParkourWarrior.map.Difficulty;
 import club.sitmc.sitParkourWarrior.map.DynamicData;
@@ -40,16 +45,29 @@ public class DPCommand implements CommandExecutor, TabCompleter {
     private final DynamicService dynamicService;
     private final CourseLayoutAnalyzer courseLayoutAnalyzer;
     private final PkwWorldManager pkwWorldManager;
+    private final RecordsManager recordsManager;
+    private final CountdownScoringConfig countdownScoring;
+    private final BoardManager boardManager;
     private final SchematicService schematicService = new SchematicService();
 
-    public DPCommand(MapManager mapManager, SessionManager sessionManager, SelectionManager selectionManager, DynamicService dynamicService, CourseLayoutAnalyzer courseLayoutAnalyzer, PkwWorldManager pkwWorldManager) {
+    public DPCommand(MapManager mapManager, SessionManager sessionManager, SelectionManager selectionManager, DynamicService dynamicService, CourseLayoutAnalyzer courseLayoutAnalyzer, PkwWorldManager pkwWorldManager, RecordsManager recordsManager, CountdownScoringConfig countdownScoring, BoardManager boardManager) {
         this.mapManager = mapManager;
         this.sessionManager = sessionManager;
         this.selectionManager = selectionManager;
         this.dynamicService = dynamicService;
         this.courseLayoutAnalyzer = courseLayoutAnalyzer;
         this.pkwWorldManager = pkwWorldManager;
+        this.recordsManager = recordsManager;
+        this.countdownScoring = countdownScoring;
+        this.boardManager = boardManager;
     }
+
+    private static final java.util.Set<String> ADMIN_COMMANDS = java.util.Set.of(
+            "create", "edit", "exit", "particles", "sound", "pos1", "pos2",
+            "setstart", "setend", "title", "difficulty", "dynamic", "deploy",
+            "undeploy", "save", "delete", "addforkpoint", "delforkpoint",
+            "setendtier", "reload", "pkwworld"
+    );
 
     @Override
     public boolean onCommand(CommandSender sender, Command command, String label, String[] args) {
@@ -58,6 +76,10 @@ public class DPCommand implements CommandExecutor, TabCompleter {
             return true;
         }
         String sub = args[0].toLowerCase();
+        if (ADMIN_COMMANDS.contains(sub) && !sender.hasPermission("dynamicparkour.admin")) {
+            Msg.send(sender, "你没有权限使用该命令。");
+            return true;
+        }
         switch (sub) {
             case "create":
                 return handleCreate(sender, args);
@@ -101,6 +123,12 @@ public class DPCommand implements CommandExecutor, TabCompleter {
                 return handleReload(sender);
             case "pkwworld":
                 return handlePkwWorld(sender, args);
+            case "quit":
+                return handleQuit(sender);
+            case "top":
+                return handleTop(sender, args);
+            case "board":
+                return handleBoard(sender, args);
             default:
                 Msg.send(sender, "未知子命令。输入 /sitpkw 查看用法。");
                 return true;
@@ -130,9 +158,16 @@ public class DPCommand implements CommandExecutor, TabCompleter {
         Msg.send(sender, "/sitpkw delforkpoint <序号>            删除当前编辑FORK节点的分支点");
         Msg.send(sender, "/sitpkw setendtier <easy|normal|hard>  设置全局终点难度类型");
         Msg.send(sender, "/sitpkw delete <id>                    删除关卡");
-        Msg.send(sender, "/sitpkw pkwworld add [世界名]          加入 PKW 世界列表（省略则为当前世界）");
-        Msg.send(sender, "/sitpkw pkwworld remove [世界名]       移出 PKW 世界列表（省略则为当前世界）");
-        Msg.send(sender, "/sitpkw pkwworld list                  列出所有 PKW 世界");
+        Msg.send(sender, "/sitpkw pkwworld add [世界名] <countup|countdown>  加入 PKW 世界并指定模式");
+        Msg.send(sender, "/sitpkw pkwworld setmode [世界名] <countup|countdown>  修改已有 PKW 世界的模式");
+        Msg.send(sender, "/sitpkw pkwworld duration [世界名] <秒数>          设定倒计时总时长");
+        Msg.send(sender, "/sitpkw pkwworld remove [世界名]                  移出 PKW 世界列表");
+        Msg.send(sender, "/sitpkw pkwworld list                             列出所有 PKW 世界");
+        Msg.send(sender, "/sitpkw quit                            放弃当前跑酷");
+        Msg.send(sender, "/sitpkw top <standard|advance|expect|countdown> [世界名]  查看排行榜");
+        Msg.send(sender, "/sitpkw board add <榜名>                 创建榜牌");
+        Msg.send(sender, "/sitpkw board remove                    移除附近榜牌");
+        Msg.send(sender, "/sitpkw board list                      列出当前世界榜牌");
         Msg.send(sender, "/sitpkw reload                         重载配置");
     }
 
@@ -833,6 +868,7 @@ public class DPCommand implements CommandExecutor, TabCompleter {
         dynamicService.stopAll();
         mapManager.loadAll();
         dynamicService.startAllDeployed();
+        countdownScoring.load();
         courseLayoutAnalyzer.recomputeAllPkwWorlds();
         Msg.send(sender, "已重载关卡配置。");
         return true;
@@ -840,63 +876,292 @@ public class DPCommand implements CommandExecutor, TabCompleter {
 
     private boolean handlePkwWorld(CommandSender sender, String[] args) {
         if (args.length < 2) {
-            Msg.send(sender, "用法: /sitpkw pkwworld <add|remove|list> [世界名]");
+            Msg.send(sender, "用法: /sitpkw pkwworld <add|setmode|duration|remove|list> [世界名] [...]");
             return true;
         }
         String action = args[1].toLowerCase();
         switch (action) {
+            case "add":
+                return handlePkwWorldAdd(sender, args);
+            case "setmode":
+                return handlePkwWorldSetMode(sender, args);
+            case "duration":
+                return handlePkwWorldDuration(sender, args);
+            case "remove":
+                return handlePkwWorldRemove(sender, args);
+            case "list":
+                return handlePkwWorldList(sender);
+            default:
+                Msg.send(sender, "用法: /sitpkw pkwworld <add|setmode|duration|remove|list> [世界名] [...]");
+                return true;
+        }
+    }
+
+    /**
+     * Parse [世界名] <值> from args. Returns {worldName, value}.
+     * If value is omitted (only one arg after action), worldName defaults
+     * to the player's current world and the single arg is the value.
+     */
+    private String[] resolveWorldAndValue(CommandSender sender, String[] args, int actionIdx) {
+        String worldName;
+        String value;
+        if (args.length > actionIdx + 1) {
+            worldName = args[actionIdx];
+            value = args[actionIdx + 1];
+        } else if (args.length > actionIdx && sender instanceof Player) {
+            worldName = ((Player) sender).getWorld().getName();
+            value = args[actionIdx];
+        } else {
+            return null;
+        }
+        return new String[]{worldName, value};
+    }
+
+    private boolean handlePkwWorldAdd(CommandSender sender, String[] args) {
+        String[] wv = resolveWorldAndValue(sender, args, 2);
+        if (wv == null) {
+            Msg.send(sender, "用法: /sitpkw pkwworld add [世界名] <countup|countdown>");
+            return true;
+        }
+        String worldName = wv[0];
+        TimingMode mode = TimingMode.fromString(wv[1]);
+        if (Bukkit.getWorld(worldName) == null) {
+            Msg.send(sender, "世界 " + worldName + " 不存在或未加载。");
+            return true;
+        }
+        boolean added = pkwWorldManager.add(worldName, mode);
+        if (added) {
+            courseLayoutAnalyzer.recomputeWorld(worldName);
+        }
+        Msg.send(sender, added
+                ? "已将 " + worldName + " 加入 PKW 世界列表（" + mode.toConfigString() + "）。"
+                : worldName + " 已在 PKW 世界列表中。");
+        return true;
+    }
+
+    private boolean handlePkwWorldSetMode(CommandSender sender, String[] args) {
+        String[] wv = resolveWorldAndValue(sender, args, 2);
+        if (wv == null) {
+            Msg.send(sender, "用法: /sitpkw pkwworld setmode [世界名] <countup|countdown>");
+            return true;
+        }
+        String worldName = wv[0];
+        TimingMode mode = TimingMode.fromString(wv[1]);
+        if (!pkwWorldManager.isPkwWorld(worldName)) {
+            Msg.send(sender, worldName + " 不是 PKW 世界。");
+            return true;
+        }
+        pkwWorldManager.setMode(worldName, mode);
+        Msg.send(sender, "已将 " + worldName + " 的模式改为 " + mode.toConfigString() + "。");
+        return true;
+    }
+
+    private boolean handlePkwWorldDuration(CommandSender sender, String[] args) {
+        String[] wv = resolveWorldAndValue(sender, args, 2);
+        if (wv == null) {
+            Msg.send(sender, "用法: /sitpkw pkwworld duration [世界名] <秒数>");
+            return true;
+        }
+        String worldName = wv[0];
+        if (!pkwWorldManager.isPkwWorld(worldName)) {
+            Msg.send(sender, worldName + " 不是 PKW 世界。");
+            return true;
+        }
+        if (pkwWorldManager.getTimingMode(worldName) == TimingMode.COUNTUP) {
+            Msg.send(sender, "注意：" + worldName + " 是正计时模式，设定的时长暂不生效。");
+        }
+        int sec;
+        try {
+            sec = Integer.parseInt(wv[1]);
+        } catch (NumberFormatException ex) {
+            Msg.send(sender, "无效秒数: " + wv[1]);
+            return true;
+        }
+        if (sec <= 0) {
+            Msg.send(sender, "秒数必须为正整数。");
+            return true;
+        }
+        pkwWorldManager.setCountdownDuration(worldName, sec);
+        Msg.send(sender, "已将 " + worldName + " 的倒计时时长设为 " + sec + " 秒。");
+        return true;
+    }
+
+    private boolean handlePkwWorldRemove(CommandSender sender, String[] args) {
+        String worldName;
+        if (args.length >= 3) {
+            worldName = args[2];
+        } else if (sender instanceof Player) {
+            worldName = ((Player) sender).getWorld().getName();
+        } else {
+            Msg.send(sender, "控制台必须指定世界名: /sitpkw pkwworld remove <世界名>");
+            return true;
+        }
+        boolean removed = pkwWorldManager.remove(worldName);
+        if (removed) {
+            courseLayoutAnalyzer.removeWorld(worldName);
+        }
+        Msg.send(sender, removed ? "已将 " + worldName + " 移出 PKW 世界列表。" : worldName + " 不在 PKW 世界列表中。");
+        return true;
+    }
+
+    private boolean handlePkwWorldList(CommandSender sender) {
+        java.util.Set<String> worlds = pkwWorldManager.getWorlds();
+        if (worlds.isEmpty()) {
+            Msg.send(sender, "当前没有 PKW 世界。");
+        } else {
+            Msg.send(sender, "PKW 世界列表:");
+            for (String w : worlds) {
+                TimingMode mode = pkwWorldManager.getTimingMode(w);
+                int dur = pkwWorldManager.getCountdownDuration(w);
+                String extra = mode == TimingMode.COUNTDOWN && dur > 0 ? "（倒计时 " + dur + " 秒）" : "";
+                Msg.send(sender, "  - " + w + " [" + mode.toConfigString() + "]" + extra);
+            }
+        }
+        return true;
+    }
+
+    private boolean handleQuit(CommandSender sender) {
+        if (!(sender instanceof Player player)) {
+            Msg.send(sender, "只能由玩家执行。");
+            return true;
+        }
+        if (sessionManager.getRunProgress(player.getUniqueId()) == null) {
+            Msg.send(sender, "你没有进行中的跑酷。");
+            return true;
+        }
+        sessionManager.quitRun(player);
+        Msg.send(player, "已放弃当前跑酷。");
+        return true;
+    }
+
+    private boolean handleTop(CommandSender sender, String[] args) {
+        if (args.length < 2) {
+            Msg.send(sender, "用法: /sitpkw top <standard|advance|expect|countdown> [世界名]");
+            return true;
+        }
+        String tier = args[1].toLowerCase();
+        if (!tier.equals("standard") && !tier.equals("advance") && !tier.equals("expect") && !tier.equals("countdown")) {
+            Msg.send(sender, "榜名须为 standard、advance、expect 或 countdown。");
+            return true;
+        }
+        String worldName;
+        if (args.length >= 3) {
+            worldName = args[2];
+        } else if (sender instanceof Player player) {
+            worldName = player.getWorld().getName();
+        } else {
+            Msg.send(sender, "控制台必须指定世界名: /sitpkw top <standard|advance|expect|countdown> <世界名>");
+            return true;
+        }
+        if (!pkwWorldManager.isPkwWorld(worldName)) {
+            Msg.send(sender, worldName + " 不是 PKW 世界。");
+            return true;
+        }
+
+        if (tier.equals("countdown")) {
+            java.util.List<club.sitmc.sitParkourWarrior.records.RecordsManager.CountdownRankEntry> entries =
+                    recordsManager.getCountdownTop(worldName, 10);
+            if (entries.isEmpty()) {
+                Msg.send(sender, "countdown 榜暂无记录。");
+            } else {
+                Msg.send(sender, "§6--- " + worldName + " countdown 榜 ---");
+                int rank = 1;
+                for (var e : entries) {
+                    double sec = e.timeMs / 1000.0;
+                    int min = (int) (sec / 60);
+                    double s = sec % 60;
+                    String time = min > 0 ? min + ":" + String.format("%05.2f", s) : String.format("%.2f", s);
+                    Msg.send(sender, rank + ". " + e.playerName + " - " + e.score + "分 "
+                            + "（石" + e.stone + "铜" + e.bronze + "银" + e.silver + "金" + e.gold + "） " + time);
+                    rank++;
+                }
+            }
+        } else {
+            java.util.List<club.sitmc.sitParkourWarrior.records.RecordsManager.RankEntry> entries =
+                    recordsManager.getTop(worldName, tier, 10);
+            if (entries.isEmpty()) {
+                Msg.send(sender, tier + " 榜暂无记录。");
+            } else {
+                Msg.send(sender, "§6--- " + worldName + " " + tier + " 榜 ---");
+                int rank = 1;
+                for (var e : entries) {
+                    double sec = e.timeMs / 1000.0;
+                    int min = (int) (sec / 60);
+                    double s = sec % 60;
+                    String time = min > 0 ? min + ":" + String.format("%05.2f", s) : String.format("%.2f", s);
+                    Msg.send(sender, rank + ". " + e.playerName + " - " + time + " (" + e.medals + "牌)");
+                    rank++;
+                }
+            }
+        }
+        return true;
+    }
+
+    private boolean handleBoard(CommandSender sender, String[] args) {
+        if (!(sender instanceof Player player)) {
+            Msg.send(sender, "只能由玩家执行。");
+            return true;
+        }
+        if (args.length < 2) {
+            Msg.send(sender, "用法: /sitpkw board <add|remove|list>");
+            return true;
+        }
+        String worldName = player.getWorld().getName();
+        if (!pkwWorldManager.isPkwWorld(worldName)) {
+            Msg.send(sender, "榜牌只能在 PKW 世界使用。");
+            return true;
+        }
+        TimingMode mode = pkwWorldManager.getTimingMode(worldName);
+
+        switch (args[1].toLowerCase()) {
             case "add": {
-                String worldName;
-                if (args.length >= 3) {
-                    worldName = args[2];
-                } else if (sender instanceof Player player) {
-                    worldName = player.getWorld().getName();
-                } else {
-                    Msg.send(sender, "控制台必须指定世界名: /sitpkw pkwworld add <世界名>");
+                if (args.length < 3) {
+                    Msg.send(sender, "用法: /sitpkw board add <榜名>");
                     return true;
                 }
-                if (Bukkit.getWorld(worldName) == null) {
-                    Msg.send(sender, "世界 " + worldName + " 不存在或未加载。");
+                String tier = args[2].toLowerCase();
+                if (mode == TimingMode.COUNTUP && tier.equals("countdown")) {
+                    Msg.send(sender, "正计时世界不支持倒计时榜。可用: standard, advance, expect");
                     return true;
                 }
-                boolean added = pkwWorldManager.add(worldName);
-                if (added) {
-                    courseLayoutAnalyzer.recomputeWorld(worldName);
+                if (mode == TimingMode.COUNTDOWN && !tier.equals("countdown")) {
+                    Msg.send(sender, "倒计时世界只支持 countdown 榜。");
+                    return true;
                 }
-                Msg.send(sender, added ? "已将 " + worldName + " 加入 PKW 世界列表。" : worldName + " 已在 PKW 世界列表中。");
+                if (!tier.equals("standard") && !tier.equals("advance") && !tier.equals("expect") && !tier.equals("countdown")) {
+                    Msg.send(sender, "无效榜名。可用: standard, advance, expect, countdown");
+                    return true;
+                }
+                BoardData board = boardManager.addBoard(worldName, tier, player.getLocation());
+                boardManager.notifyBoardChanged();
+                Msg.send(sender, "已创建" + board.tierDisplayName() + "。");
                 return true;
             }
             case "remove": {
-                String worldName;
-                if (args.length >= 3) {
-                    worldName = args[2];
-                } else if (sender instanceof Player player) {
-                    worldName = player.getWorld().getName();
+                BoardData removed = boardManager.removeNearest(player.getLocation());
+                if (removed != null) {
+                    boardManager.notifyBoardChanged();
+                    Msg.send(sender, "已移除" + removed.tierDisplayName() + "。");
                 } else {
-                    Msg.send(sender, "控制台必须指定世界名: /sitpkw pkwworld remove <世界名>");
-                    return true;
+                    Msg.send(sender, "附近没有榜牌。");
                 }
-                boolean removed = pkwWorldManager.remove(worldName);
-                if (removed) {
-                    courseLayoutAnalyzer.removeWorld(worldName);
-                }
-                Msg.send(sender, removed ? "已将 " + worldName + " 移出 PKW 世界列表。" : worldName + " 不在 PKW 世界列表中。");
                 return true;
             }
             case "list": {
-                java.util.Set<String> worlds = pkwWorldManager.getWorlds();
-                if (worlds.isEmpty()) {
-                    Msg.send(sender, "当前没有 PKW 世界。");
+                java.util.List<BoardData> list = boardManager.getBoardsInWorld(worldName);
+                if (list.isEmpty()) {
+                    Msg.send(sender, "当前世界没有榜牌。");
                 } else {
-                    Msg.send(sender, "PKW 世界列表:");
-                    for (String w : worlds) {
-                        Msg.send(sender, "  - " + w);
+                    Msg.send(sender, "当前世界榜牌:");
+                    for (BoardData b : list) {
+                        Msg.send(sender, "  - " + b.tierDisplayName()
+                                + " (" + (int) b.getX() + ", " + (int) b.getY() + ", " + (int) b.getZ() + ")");
                     }
                 }
                 return true;
             }
             default:
-                Msg.send(sender, "用法: /sitpkw pkwworld <add|remove|list> [世界名]");
+                Msg.send(sender, "用法: /sitpkw board <add|remove|list>");
                 return true;
         }
     }
@@ -904,7 +1169,11 @@ public class DPCommand implements CommandExecutor, TabCompleter {
     @Override
     public List<String> onTabComplete(CommandSender sender, Command command, String alias, String[] args) {
         if (args.length == 1) {
-            return filter(args[0], Arrays.asList("create", "edit", "exit", "particles", "sound", "pos1", "pos2", "setstart", "setend", "title", "difficulty", "dynamic", "deploy", "undeploy", "addforkpoint", "delforkpoint", "setendtier", "save", "delete", "pkwworld", "reload"));
+            var allCmds = new java.util.ArrayList<>(Arrays.asList("create", "edit", "exit", "particles", "sound", "pos1", "pos2", "setstart", "setend", "title", "difficulty", "dynamic", "deploy", "undeploy", "addforkpoint", "delforkpoint", "setendtier", "save", "delete", "pkwworld", "quit", "top", "board", "reload"));
+            if (!sender.hasPermission("dynamicparkour.admin")) {
+                allCmds.removeIf(ADMIN_COMMANDS::contains);
+            }
+            return filter(args[0], allCmds);
         }
         if (args.length == 3 && args[0].equalsIgnoreCase("create")) {
             return filter(args[2], Arrays.asList("level", "fork", "globalstart", "globalend", "branchend"));
@@ -929,15 +1198,54 @@ public class DPCommand implements CommandExecutor, TabCompleter {
             return filter(args[1], new ArrayList<>(mapManager.getMaps().keySet()));
         }
         if (args.length == 2 && args[0].equalsIgnoreCase("pkwworld")) {
+            return filter(args[1], Arrays.asList("add", "setmode", "duration", "remove", "list"));
+        }
+        if (args.length == 2 && args[0].equalsIgnoreCase("top")) {
+            return filter(args[1], Arrays.asList("standard", "advance", "expect", "countdown"));
+        }
+        if (args.length == 2 && args[0].equalsIgnoreCase("board")) {
             return filter(args[1], Arrays.asList("add", "remove", "list"));
         }
-        if (args.length == 3 && args[0].equalsIgnoreCase("pkwworld")
-                && (args[1].equalsIgnoreCase("add") || args[1].equalsIgnoreCase("remove"))) {
-            List<String> worldNames = new ArrayList<>();
-            for (org.bukkit.World w : Bukkit.getWorlds()) {
-                worldNames.add(w.getName());
+        if (args.length == 3 && args[0].equalsIgnoreCase("board") && args[1].equalsIgnoreCase("add")
+                && sender instanceof Player player) {
+            TimingMode mode = pkwWorldManager.getTimingMode(player.getWorld());
+            if (mode == TimingMode.COUNTDOWN) {
+                return filter(args[2], Arrays.asList("countdown"));
             }
-            return filter(args[2], worldNames);
+            return filter(args[2], Arrays.asList("standard", "advance", "expect"));
+        }
+        if (args.length == 3 && args[0].equalsIgnoreCase("top")) {
+            List<String> opts = new ArrayList<>();
+            for (String w : pkwWorldManager.getWorlds()) opts.add(w);
+            return filter(args[2], opts);
+        }
+        if (args.length >= 3 && args[0].equalsIgnoreCase("pkwworld")) {
+            String sub = args[1].toLowerCase();
+            int modePos = sub.equals("add") || sub.equals("setmode") ? 3 : (sub.equals("duration") || sub.equals("remove") ? -1 : -1);
+            if (sub.equals("duration")) {
+                // arg[2] could be world or value, arg[3] could be value
+                if (args.length == 3) {
+                    List<String> opts = new ArrayList<>();
+                    for (org.bukkit.World w : Bukkit.getWorlds()) opts.add(w.getName());
+                    return filter(args[2], opts);
+                }
+                return Collections.emptyList();
+            }
+            if ((sub.equals("add") || sub.equals("setmode")) && args.length == 3) {
+                // Could be world name or mode value
+                List<String> opts = new ArrayList<>();
+                opts.addAll(Arrays.asList("countup", "countdown"));
+                for (org.bukkit.World w : Bukkit.getWorlds()) opts.add(w.getName());
+                return filter(args[2], opts);
+            }
+            if ((sub.equals("add") || sub.equals("setmode")) && args.length == 4) {
+                return filter(args[3], Arrays.asList("countup", "countdown"));
+            }
+            if (sub.equals("remove") && args.length == 3) {
+                List<String> opts = new ArrayList<>();
+                for (org.bukkit.World w : Bukkit.getWorlds()) opts.add(w.getName());
+                return filter(args[2], opts);
+            }
         }
         if (args.length == 2 && args[0].equalsIgnoreCase("delforkpoint") && sender instanceof Player player) {
             ParkourMap map = selectionManager.getEditingMap(player);

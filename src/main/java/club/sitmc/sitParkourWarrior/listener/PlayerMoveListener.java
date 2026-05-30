@@ -93,6 +93,9 @@ public class PlayerMoveListener implements Listener {
         // Full-course timing check: independent of session state.
         checkFullCourseTiming(player, to);
 
+        // Countdown zero-timeout check
+        checkCountdownTimeout(player, session);
+
         if (selectionManager.isEditing(player)) {
             return;
         }
@@ -174,23 +177,26 @@ public class PlayerMoveListener implements Listener {
 
         boolean inStart = deployment.isInStartZone(to);
         if (inStart && !session.isInsideStart()) {
-            if (session.isPendingTitleAtStart()) {
+            if (session.isSkipResetAtStartOnce()) {
+                session.setSkipResetAtStartOnce(false);
+                if (!session.isStarted()) {
+                    session.startTimer(System.currentTimeMillis());
+                    player.sendTitle(
+                            map.getDifficulty().getTitleColor() + map.getTitle(),
+                            "",
+                            10, 40, 10
+                    );
+                }
+            } else {
+                session.resetTimer();
+                session.startTimer(System.currentTimeMillis());
                 player.sendTitle(
                         map.getDifficulty().getTitleColor() + map.getTitle(),
                         "",
                         10, 40, 10
                 );
-                session.setPendingTitleAtStart(false);
             }
-            if (session.isSkipResetAtStartOnce()) {
-                session.setSkipResetAtStartOnce(false);
-                if (!session.isStarted()) {
-                    session.startTimer(System.currentTimeMillis());
-                }
-            } else {
-                session.resetTimer();
-                session.startTimer(System.currentTimeMillis());
-            }
+            session.setPendingTitleAtStart(false);
             session.setInsideStart(true);
         } else if (!inStart && session.isInsideStart()) {
             session.setInsideStart(false);
@@ -207,6 +213,9 @@ public class PlayerMoveListener implements Listener {
      * detection. Independent of session state — runs on every cross-block move.
      */
     private void checkFullCourseTiming(Player player, Location to) {
+        String worldName = to.getWorld().getName();
+        club.sitmc.sitParkourWarrior.config.TimingMode mode = pkwWorldManager.getTimingMode(to.getWorld());
+
         for (ParkourMap map : mapManager.getMaps().values()) {
             NodeType type = map.getNodeType();
             if (type != NodeType.GLOBAL_START && type != NodeType.GLOBAL_END) {
@@ -215,13 +224,22 @@ public class PlayerMoveListener implements Listener {
             for (Deployment dep : map.getDeployments()) {
                 if (type == NodeType.GLOBAL_START) {
                     if (dep.isInStartZone(to)) {
-                        sessionManager.startFullCourse(player.getUniqueId());
+                        if (mode == club.sitmc.sitParkourWarrior.config.TimingMode.COUNTDOWN) {
+                            sessionManager.startFullCourse(player.getUniqueId());
+                        } else {
+                            sessionManager.startFullCourse(player.getUniqueId());
+                        }
                         return;
                     }
                 } else {
                     if (dep.isInEndZone(to)) {
                         if (sessionManager.getRunProgress(player.getUniqueId()) != null) {
-                            sessionManager.finishFullCourse(player);
+                            String endTier = map.getEndTier().toConfigString();
+                            if (mode == club.sitmc.sitParkourWarrior.config.TimingMode.COUNTDOWN) {
+                                sessionManager.finishCountdownByEnd(player, worldName, endTier);
+                            } else {
+                                sessionManager.finishFullCourse(player, map.getId(), dep.getId(), endTier);
+                            }
                             sessionManager.endSession(player, false);
                             sessionManager.cleanupPlayerEquipment(player);
                             player.setFallDistance(0f);
@@ -235,6 +253,21 @@ public class PlayerMoveListener implements Listener {
                 }
             }
         }
+    }
+
+    private void checkCountdownTimeout(Player player, ParkourSession session) {
+        if (session == null) return;
+        String worldName = player.getWorld().getName();
+        if (pkwWorldManager.getTimingMode(player.getWorld()) != club.sitmc.sitParkourWarrior.config.TimingMode.COUNTDOWN) return;
+        if (sessionManager.getRunProgress(player.getUniqueId()) == null) return;
+        if (!sessionManager.isCountdownExpired(player.getUniqueId(), worldName)) return;
+
+        sessionManager.finishCountdownByTimeout(player, worldName);
+        sessionManager.endSession(player, false);
+        sessionManager.cleanupPlayerEquipment(player);
+        player.setFallDistance(0f);
+        player.setVelocity(new org.bukkit.util.Vector(0, 0, 0));
+        player.teleport(player.getWorld().getSpawnLocation());
     }
 
     /**

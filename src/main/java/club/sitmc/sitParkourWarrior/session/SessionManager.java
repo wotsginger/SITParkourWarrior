@@ -1,12 +1,18 @@
 package club.sitmc.sitParkourWarrior.session;
 
 import club.sitmc.sitParkourWarrior.SITParkourWarrior;
+import club.sitmc.sitParkourWarrior.config.CountdownScoringConfig;
+import club.sitmc.sitParkourWarrior.config.PkwWorldManager;
+import club.sitmc.sitParkourWarrior.config.TimingMode;
+import club.sitmc.sitParkourWarrior.course.CourseLayoutAnalyzer;
 import club.sitmc.sitParkourWarrior.map.Deployment;
 import club.sitmc.sitParkourWarrior.map.DynamicService;
+import club.sitmc.sitParkourWarrior.map.EndTier;
 import club.sitmc.sitParkourWarrior.map.MapManager;
 import club.sitmc.sitParkourWarrior.map.NodeType;
 import club.sitmc.sitParkourWarrior.map.ParkourMap;
 import club.sitmc.sitParkourWarrior.map.Region;
+import club.sitmc.sitParkourWarrior.records.RecordsManager;
 import club.sitmc.sitParkourWarrior.util.Msg;
 import org.bukkit.Bukkit;
 import club.sitmc.sitParkourWarrior.map.PointLocation;
@@ -24,13 +30,23 @@ public class SessionManager {
     private final SITParkourWarrior plugin;
     private final MapManager mapManager;
     private final DynamicService dynamicService;
+    private final RecordsManager recordsManager;
+    private final PkwWorldManager pkwWorldManager;
+    private final CourseLayoutAnalyzer courseLayoutAnalyzer;
+    private final CountdownScoringConfig countdownScoring;
     private final Map<UUID, ParkourSession> sessions = new HashMap<>();
     private final Map<UUID, RunProgress> runProgresses = new HashMap<>();
 
-    public SessionManager(SITParkourWarrior plugin, MapManager mapManager, DynamicService dynamicService) {
+    public SessionManager(SITParkourWarrior plugin, MapManager mapManager, DynamicService dynamicService,
+                          RecordsManager recordsManager, PkwWorldManager pkwWorldManager,
+                          CourseLayoutAnalyzer courseLayoutAnalyzer, CountdownScoringConfig countdownScoring) {
         this.plugin = plugin;
         this.mapManager = mapManager;
         this.dynamicService = dynamicService;
+        this.recordsManager = recordsManager;
+        this.pkwWorldManager = pkwWorldManager;
+        this.courseLayoutAnalyzer = courseLayoutAnalyzer;
+        this.countdownScoring = countdownScoring;
     }
 
     public ParkourSession getSession(UUID playerId) {
@@ -140,9 +156,18 @@ public class SessionManager {
             if (session.isStarted()) {
                 session.stopTimer(System.currentTimeMillis());
             }
+            // Medal for LEVEL completion (COUNTUP or COUNTDOWN)
+            ParkourMap map = mapManager.getMap(session.getMapId());
+            if (map != null && map.getNodeType() == NodeType.LEVEL) {
+                TimingMode mode = pkwWorldManager.getTimingMode(player.getWorld());
+                if (mode == TimingMode.COUNTUP) {
+                    claimLevelMedal(player, session.getMapId(), session.getDeploymentId());
+                } else if (mode == TimingMode.COUNTDOWN) {
+                    claimCountdownMedal(player, session.getMapId(), session.getDeploymentId());
+                }
+            }
             long durationMs = session.getElapsedMs(System.currentTimeMillis());
             double seconds = durationMs / 1000.0;
-            ParkourMap map = mapManager.getMap(session.getMapId());
             if (map != null) {
                 String coloredTitle = map.getDifficulty().getTitleColor() + map.getTitle();
                 Msg.send(player, "您已通过 " + coloredTitle + "（用时：" + String.format("%.2f", seconds) + " 秒）。");
@@ -181,7 +206,8 @@ public class SessionManager {
     // ---- Full-course timing (GLOBAL_START → GLOBAL_END) ----
 
     public void startFullCourse(UUID playerId) {
-        runProgresses.put(playerId, new RunProgress(System.currentTimeMillis()));
+        if (runProgresses.containsKey(playerId)) return;
+        runProgresses.put(playerId, new RunProgress());
     }
 
     public RunProgress getRunProgress(UUID playerId) {
@@ -192,23 +218,180 @@ public class SessionManager {
         runProgresses.remove(playerId);
     }
 
+    public void restoreRunProgress(UUID playerId, RunProgress rp) {
+        runProgresses.put(playerId, rp);
+    }
+
     public void clearAllRunProgresses() {
         runProgresses.clear();
     }
 
     /**
-     * Settle full-course timing and display result.
-     * @return true if a run was settled, false if no active run progress.
+     * Award a medal for completing a LEVEL. Only works in COUNTUP worlds.
+     * Returns true if the level was newly claimed.
      */
-    public boolean finishFullCourse(Player player) {
+    public boolean claimLevelMedal(Player player, String mapId, String deploymentId) {
+        if (player == null) return false;
+        if (pkwWorldManager.getTimingMode(player.getWorld()) != TimingMode.COUNTUP) return false;
+        RunProgress rp = runProgresses.get(player.getUniqueId());
+        if (rp == null) return false;
+        return rp.claimLevel(mapId, deploymentId);
+    }
+
+    /**
+     * Settle full-course timing and archive the result.
+     * For COUNTUP worlds: determine tier, save to records.
+     */
+    public boolean finishFullCourse(Player player, String globalEndMapId, String globalEndDepId, String endTierStr) {
         RunProgress progress = runProgresses.remove(player.getUniqueId());
-        if (progress == null) {
-            return false;
-        }
-        long elapsedMs = System.currentTimeMillis() - progress.getStartTimestamp();
+        if (progress == null) return false;
+
+        progress.pause();
+        long elapsedMs = progress.getElapsedMs();
         double seconds = elapsedMs / 1000.0;
-        Msg.send(player, "恭喜完成全程！总用时：" + String.format("%.2f", seconds) + " 秒。");
+
+        // Award end-tier medals
+        EndTier tier = EndTier.fromString(endTierStr);
+        int bonus;
+        switch (tier) {
+            case HARD:   bonus = 3; break;
+            case NORMAL: bonus = 2; break;
+            default:     bonus = 1; break;
+        }
+        progress.addEndTierMedals(bonus);
+        int totalMedals = progress.getMedals();
+
+        Msg.send(player, "恭喜完成全程！总用时：" + String.format("%.2f", seconds)
+                + " 秒，奖牌数：" + totalMedals);
+
+        // Determine ranking tier
+        String rankTier;
+        if (totalMedals >= 21) {
+            rankTier = "expect";
+        } else if (totalMedals >= 16) {
+            rankTier = "advance";
+        } else {
+            rankTier = "standard";
+        }
+
+        // Archive to records (COUNTUP only)
+        if (pkwWorldManager.getTimingMode(player.getWorld()) == TimingMode.COUNTUP) {
+            String worldName = player.getWorld().getName();
+            boolean isPb = recordsManager.saveRecord(worldName, rankTier,
+                    player.getUniqueId(), player.getName(), elapsedMs, totalMedals);
+            recordsManager.clearActiveRun(worldName, player.getUniqueId());
+            String pbMsg = isPb ? "（新个人最佳！）" : "";
+            Msg.send(player, "成绩归入 " + rankTier + " 榜" + pbMsg);
+        }
+
         return true;
+    }
+
+    /**
+     * Abandon the current run without archiving.
+     */
+    public void quitRun(Player player) {
+        RunProgress rp = runProgresses.remove(player.getUniqueId());
+        if (rp == null) return;
+        if (pkwWorldManager.isPkwWorld(player.getWorld())) {
+            recordsManager.clearActiveRun(player.getWorld().getName(), player.getUniqueId());
+        }
+    }
+
+    // ---- Countdown-specific ----
+
+    /**
+     * Award a categorized medal for COUNTDOWN LEVEL completion.
+     * Medal type is determined from course.yml role.
+     */
+    public String claimCountdownMedal(Player player, String mapId, String deploymentId) {
+        if (player == null) return null;
+        if (pkwWorldManager.getTimingMode(player.getWorld()) != TimingMode.COUNTDOWN) return null;
+        RunProgress rp = runProgresses.get(player.getUniqueId());
+        if (rp == null) return null;
+
+        // Query role from CourseLayoutAnalyzer
+        String worldName = player.getWorld().getName();
+        CourseLayoutAnalyzer.LevelRoleInfo roleInfo = courseLayoutAnalyzer.getLevelRole(worldName, mapId, deploymentId);
+        String medalType = roleToMedalType(roleInfo);
+        if (medalType == null) return null;
+
+        return rp.claimLevelByType(mapId, deploymentId, medalType);
+    }
+
+    private String roleToMedalType(CourseLayoutAnalyzer.LevelRoleInfo info) {
+        if (info == null) return null;
+        if ("main".equals(info.role)) return "stone";
+        if ("branch".equals(info.role)) {
+            switch (info.order) {
+                case 1: return "bronze";
+                case 2: return "silver";
+                case 3: return "gold";
+                default: return "gold"; // 3+ → gold cap
+            }
+        }
+        return null; // final / unclassified don't award
+    }
+
+    /** Get remaining time in ms for COUNTDOWN action bar display. */
+    public long getCountdownRemainingMs(UUID playerId, String worldName) {
+        RunProgress rp = runProgresses.get(playerId);
+        if (rp == null) return -1;
+        int totalSec = pkwWorldManager.getCountdownDuration(worldName);
+        long totalMs = totalSec * 1000L;
+        return totalMs - rp.getElapsedMs();
+    }
+
+    /** Check if countdown has reached zero. */
+    public boolean isCountdownExpired(UUID playerId, String worldName) {
+        return getCountdownRemainingMs(playerId, worldName) <= 0;
+    }
+
+    /** Settle countdown run via reaching GLOBAL_END. */
+    public void finishCountdownByEnd(Player player, String worldName, String endTier) {
+        RunProgress rp = runProgresses.remove(player.getUniqueId());
+        if (rp == null) return;
+        rp.pause();
+        settleCountdown(player, worldName, endTier, rp);
+    }
+
+    /** Settle countdown run via timeout. */
+    public void finishCountdownByTimeout(Player player, String worldName) {
+        RunProgress rp = runProgresses.remove(player.getUniqueId());
+        if (rp == null) return;
+        rp.pause();
+        settleCountdown(player, worldName, null, rp);
+    }
+
+    private void settleCountdown(Player player, String worldName, String endTier, RunProgress rp) {
+        int stone = rp.getStoneCount();
+        int bronze = rp.getBronzeCount();
+        int silver = rp.getSilverCount();
+        int gold = rp.getGoldCount();
+
+        int stoneScore = countdownScoring.getStoneScore(stone);
+        int bronzeScore = countdownScoring.getBronzeScore(bronze);
+        int silverScore = countdownScoring.getSilverScore(silver);
+        int goldScore = countdownScoring.getGoldScore(gold);
+
+        double multiplier = endTier != null ? countdownScoring.getEndTierMultiplier(endTier) : 0.0;
+        int totalScore = (int) Math.round((stoneScore + bronzeScore + silverScore + goldScore) * (1.0 + multiplier));
+
+        long elapsedMs = rp.getElapsedMs();
+        double seconds = elapsedMs / 1000.0;
+
+        String endMsg = endTier != null ? "到达终点！" : "时间到！";
+        Msg.send(player, endMsg + " 得分: " + totalScore
+                + "（石" + stoneScore + " + 铜" + bronzeScore + " + 银" + silverScore + " + 金" + goldScore
+                + (endTier != null ? "）×" + String.format("%.2f", 1.0 + multiplier) : ""));
+
+        boolean isPb = recordsManager.saveCountdownRecord(worldName,
+                player.getUniqueId(), player.getName(), totalScore,
+                stone, bronze, silver, gold, elapsedMs);
+        recordsManager.clearActiveRun(worldName, player.getUniqueId());
+        if (isPb) {
+            Msg.send(player, "新个人最佳！");
+        }
     }
 
     // ---- Session lifecycle ----
@@ -255,6 +438,12 @@ public class SessionManager {
                 endSession(player, false);
             } else {
                 sessions.remove(playerId);
+            }
+        }
+        for (UUID id : new java.util.ArrayList<>(runProgresses.keySet())) {
+            Player p = plugin.getServer().getPlayer(id);
+            if (p != null && pkwWorldManager.isPkwWorld(p.getWorld())) {
+                recordsManager.clearActiveRun(p.getWorld().getName(), id);
             }
         }
         runProgresses.clear();
@@ -343,6 +532,11 @@ public class SessionManager {
             // Record the fork point entered and store previous-level end as initial fallback.
             updated.getVisitedForkPoints().add(entryPoint.clone());
             updated.setInitialForkFallback(session.getCheckpoint());
+            // Track last visited FORK for return-compass item
+            RunProgress rp = runProgresses.get(player.getUniqueId());
+            if (rp != null) {
+                rp.setLastFork(nextMap.getId(), nextDeployment.getId(), entryPoint);
+            }
         } else if (nextMap.getNodeType() == NodeType.LEVEL && nextRegion != null
                 && nextRegion.contains(player.getLocation())) {
             updated.startTimer(System.currentTimeMillis());
@@ -374,6 +568,12 @@ public class SessionManager {
         }
         sessions.put(player.getUniqueId(), updated);
         dynamicService.onPlayerJoin(forkMap, forkDeployment);
+
+        // Track last visited FORK for return-compass item
+        RunProgress rp = runProgresses.get(player.getUniqueId());
+        if (rp != null) {
+            rp.setLastFork(forkMap.getId(), forkDeployment.getId(), forkPoint);
+        }
 
         updated.setSkipResetAtStartOnce(true);
         updated.setInsideRegion(true);

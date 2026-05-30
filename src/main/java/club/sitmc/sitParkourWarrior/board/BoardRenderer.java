@@ -1,0 +1,139 @@
+package club.sitmc.sitParkourWarrior.board;
+
+import club.sitmc.sitParkourWarrior.records.RecordsManager;
+
+import java.util.List;
+
+/**
+ * Generates TextDisplay content strings for leaderboard boards.
+ */
+public final class BoardRenderer {
+
+    private BoardRenderer() {}
+
+    /**
+     * Build the full display text for a board.
+     * @param board   the board
+     * @param records records manager for data queries
+     * @param nearestPlayerName  name of the nearest player in range, or null
+     * @param nearestPlayerRank  rank of the nearest player (1-based), or -1
+     * @param nearestPlayerTime  time string for nearest player, or null
+     * @param nearestPlayerInTop10  true if nearest player is already in top 10
+     */
+    public static String build(BoardData board, RecordsManager records,
+                                String nearestPlayerName, int nearestPlayerRank,
+                                String nearestPlayerTime, boolean nearestPlayerInTop10) {
+        StringBuilder sb = new StringBuilder();
+
+        String tierName = board.tierDisplayName();
+        boolean isCountdown = "countdown".equals(board.getTier());
+
+        // Line 1: title
+        sb.append("§6§l").append(tierName).append(" §7- §f").append(board.getWorldName()).append("\n");
+
+        if (isCountdown) {
+            List<RecordsManager.CountdownRankEntry> all = records.getCountdownTop(board.getWorldName(), Integer.MAX_VALUE);
+            sb.append("§7总人数: §f").append(all.size()).append("\n");
+            if (all.isEmpty()) {
+                sb.append("§7暂无记录");
+            } else {
+                int limit = Math.min(all.size(), 10);
+                for (int i = 0; i < limit; i++) {
+                    appendCountdownLine(sb, i + 1, all.get(i));
+                }
+                // Append viewer line
+                if (nearestPlayerName != null && !nearestPlayerInTop10 && nearestPlayerRank > 0) {
+                    sb.append("§8----------------\n");
+                    sb.append("§e你的排名: 第").append(nearestPlayerRank).append("名  ")
+                      .append(nearestPlayerName).append("  §b").append(nearestPlayerTime).append("分\n");
+                }
+            }
+        } else {
+            List<RecordsManager.RankEntry> all = records.getTop(board.getWorldName(), board.getTier(), Integer.MAX_VALUE);
+            sb.append("§7总人数: §f").append(all.size()).append("\n");
+            if (all.isEmpty()) {
+                sb.append("§7暂无记录");
+            } else {
+                int limit = Math.min(all.size(), 10);
+                for (int i = 0; i < limit; i++) {
+                    appendRankLine(sb, i + 1, all.get(i));
+                }
+                if (nearestPlayerName != null && !nearestPlayerInTop10 && nearestPlayerRank > 0) {
+                    sb.append("§8----------------\n");
+                    sb.append("§e你的排名: 第").append(nearestPlayerRank).append("名  ")
+                      .append(nearestPlayerName).append("  §b").append(nearestPlayerTime).append("\n");
+                }
+            }
+        }
+
+        return sb.toString();
+    }
+
+    private static void appendRankLine(StringBuilder sb, int rank, RecordsManager.RankEntry e) {
+        String medal = rankMedal(rank);
+        sb.append(medal).append(String.format("%2d. ", rank))
+          .append("§f").append(e.playerName)
+          .append("  §b").append(formatTime(e.timeMs))
+          .append("  §7(").append(e.medals).append("牌)\n");
+    }
+
+    private static void appendCountdownLine(StringBuilder sb, int rank, RecordsManager.CountdownRankEntry e) {
+        String medal = rankMedal(rank);
+        sb.append(medal).append(String.format("%2d. ", rank))
+          .append("§f").append(e.playerName)
+          .append("  §b").append(e.score).append("分")
+          .append("  §7(石").append(e.stone).append("铜").append(e.bronze)
+          .append("银").append(e.silver).append("金").append(e.gold).append(")\n");
+    }
+
+    private static String rankMedal(int rank) {
+        switch (rank) {
+            case 1:  return "§6";
+            case 2:  return "§7";
+            case 3:  return "§c";
+            default: return "§8";
+        }
+    }
+
+    public static String formatTime(long ms) {
+        long totalSec = ms / 1000;
+        long millis = ms % 1000;
+        long hours = totalSec / 3600;
+        long minutes = (totalSec % 3600) / 60;
+        long seconds = totalSec % 60;
+        if (hours > 0) {
+            return String.format("%d:%02d:%02d.%03d", hours, minutes, seconds, millis);
+        }
+        return String.format("%02d:%02d.%03d", minutes, seconds, millis);
+    }
+
+    /**
+     * Find the rank (1-based) and time string of a player in a COUNTUP tier.
+     * Returns null if not found.
+     */
+    public static PlayerRankInfo findPlayerRankCountup(String worldName, String tier, String playerName, RecordsManager records) {
+        List<RecordsManager.RankEntry> all = records.getTop(worldName, tier, Integer.MAX_VALUE);
+        for (int i = 0; i < all.size(); i++) {
+            if (all.get(i).playerName.equals(playerName)) {
+                return new PlayerRankInfo(i + 1, formatTime(all.get(i).timeMs) + " (" + all.get(i).medals + "牌)");
+            }
+        }
+        return null;
+    }
+
+    public static PlayerRankInfo findPlayerRankCountdown(String worldName, String playerName, RecordsManager records) {
+        List<RecordsManager.CountdownRankEntry> all = records.getCountdownTop(worldName, Integer.MAX_VALUE);
+        for (int i = 0; i < all.size(); i++) {
+            if (all.get(i).playerName.equals(playerName)) {
+                return new PlayerRankInfo(i + 1, all.get(i).score + "分");
+            }
+        }
+        return null;
+    }
+
+    public static class PlayerRankInfo {
+        public final int rank;
+        public final String display;
+        PlayerRankInfo(int rank, String display) { this.rank = rank; this.display = display; }
+    }
+}

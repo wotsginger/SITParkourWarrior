@@ -40,6 +40,7 @@ public class VisibilityManager {
     // ---- Periodic scan (call every ~5 ticks) ----
 
     public void scanAndUpdate() {
+        if (sessionManager == null) return;
         // Collect eligible players (PKW world + has RunProgress)
         List<Player> eligible = new ArrayList<>();
         for (Player p : Bukkit.getOnlinePlayers()) {

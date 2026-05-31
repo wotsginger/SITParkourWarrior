@@ -82,8 +82,8 @@ public final class BoardRenderer {
         sb.append(medal).append(String.format("%2d. ", rank))
           .append("§f").append(e.playerName)
           .append("  §b").append(e.score).append("分")
-          .append("  §7石×").append(e.stone).append(" 铜×").append(e.bronze)
-          .append(" 银×").append(e.silver).append(" 金×").append(e.gold)
+          .append("  §7石").append(e.stone).append(" 铜").append(e.bronze)
+          .append(" 银").append(e.silver).append(" 金").append(e.gold)
           .append("  §7").append(endTierDisplay(e.endTier)).append("\n");
     }
 

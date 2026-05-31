@@ -35,7 +35,7 @@ public class SessionManager {
     private final PkwWorldManager pkwWorldManager;
     private final CourseLayoutAnalyzer courseLayoutAnalyzer;
     private final CountdownScoringConfig countdownScoring;
-    private final VisibilityManager visibilityManager;
+    private VisibilityManager visibilityManager;
     private final Map<UUID, ParkourSession> sessions = new HashMap<>();
     private final Map<UUID, RunProgress> runProgresses = new HashMap<>();
 
@@ -51,6 +51,11 @@ public class SessionManager {
         this.courseLayoutAnalyzer = courseLayoutAnalyzer;
         this.countdownScoring = countdownScoring;
         this.visibilityManager = visibilityManager;
+    }
+
+    /** Set after construction to resolve circular dependency with VisibilityManager. */
+    public void setVisibilityManager(VisibilityManager vm) {
+        this.visibilityManager = vm;
     }
 
     public ParkourSession getSession(UUID playerId) {

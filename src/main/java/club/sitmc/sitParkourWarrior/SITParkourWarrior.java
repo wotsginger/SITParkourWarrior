@@ -65,8 +65,9 @@ public final class SITParkourWarrior extends JavaPlugin {
         this.boardManager = new BoardManager(this, getDataFolder());
         this.boardManager.init(new NamespacedKey(this, BoardManager.class.getSimpleName()));
         this.courseLayoutAnalyzer = new CourseLayoutAnalyzer(mapManager, pkwWorldManager, getDataFolder());
+        this.sessionManager = new SessionManager(this, mapManager, dynamicService, recordsManager, pkwWorldManager, courseLayoutAnalyzer, countdownScoring, null);
         this.visibilityManager = new VisibilityManager(this, pkwWorldManager, sessionManager);
-        this.sessionManager = new SessionManager(this, mapManager, dynamicService, recordsManager, pkwWorldManager, courseLayoutAnalyzer, countdownScoring, visibilityManager);
+        sessionManager.setVisibilityManager(visibilityManager);
         this.particleService.start(selectionManager);
         mapManager.loadAll();
         dynamicService.startAllDeployed();

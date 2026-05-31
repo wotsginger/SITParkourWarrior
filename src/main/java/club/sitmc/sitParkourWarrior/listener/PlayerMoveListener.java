@@ -204,30 +204,40 @@ public class PlayerMoveListener implements Listener {
         }
     }
 
-    // ============ Non-PKW simple single-level logic ============
+    // ============ Non-PKW simple single-level state machine ============
 
+    /**
+     * States: OUT (no session) / IN (session exists with insideRegion=true).
+     *
+     * OUT → IN:   Player enters a LEVEL's start zone → session created, timer starts.
+     * IN  → OUT:  Player reaches end zone → complete (show time, clear session).
+     * IN  → OUT:  Player leaves region via sides/top → silent exit (no message).
+     * IN  → IN:   Player falls out region bottom → teleport back to start.
+     */
     private void handleSimpleMove(Player player, Location from, Location to) {
-        // Segment special mode: quit active session and stay silent
         if (isInSegmentSpecialMode(player)) {
             ParkourSession s = sessionManager.getSession(player.getUniqueId());
-            if (s != null) {
-                sessionManager.endSession(player, false);
-            }
+            if (s != null) sessionManager.endSession(player, false);
             return;
         }
 
         ParkourSession session = sessionManager.getSession(player.getUniqueId());
 
-        // No session: auto-start when entering a LEVEL's region
+        // --- OUT state: try to enter a LEVEL's start zone ---
         if (session == null) {
             for (ParkourMap map : mapManager.getMaps().values()) {
                 if (map.getNodeType() != NodeType.LEVEL) continue;
                 for (Deployment dep : map.getDeployments()) {
-                    Region r = dep.getRegion();
-                    if (r != null && r.contains(to)) {
-                        String current = insideDeployment.get(player.getUniqueId());
-                        if (current == null || !current.equals(dep.getId())) {
-                            sessionManager.startSession(player, map, dep);
+                    if (dep.isInStartZone(to)) {
+                        sessionManager.startSession(player, map, dep);
+                        ParkourSession s = sessionManager.getSession(player.getUniqueId());
+                        if (s != null) {
+                            s.setInsideRegion(true);
+                            s.startTimer(System.currentTimeMillis());
+                            player.sendTitle(
+                                    map.getDifficulty().getTitleColor() + map.getTitle(),
+                                    map.getSubtitle() != null ? map.getSubtitle() : "",
+                                    10, 40, 10);
                         }
                         insideDeployment.put(player.getUniqueId(), dep.getId());
                         return;
@@ -238,57 +248,56 @@ public class PlayerMoveListener implements Listener {
             return;
         }
 
-        // Only LEVEL sessions are valid in simple mode
+        // --- IN state: player has an active session ---
         ParkourMap map = mapManager.getMap(session.getMapId());
         if (map == null || map.getNodeType() != NodeType.LEVEL) {
             sessionManager.endSession(player, false);
+            insideDeployment.remove(player.getUniqueId());
             return;
         }
         Deployment deployment = map.getDeployment(session.getDeploymentId());
         if (deployment == null) {
             sessionManager.endSession(player, false);
+            insideDeployment.remove(player.getUniqueId());
             return;
         }
 
         Region region = deployment.getRegion();
         if (region == null) return;
 
-        // Rectangular region fallback: fall below region → back to start
-        if (to.getBlockY() < region.getMinY()) {
-            sessionManager.teleportToCheckpoint(player);
+        // Track which deployment we're in
+        boolean inRegion = region.contains(to);
+        if (inRegion) {
+            insideDeployment.put(player.getUniqueId(), deployment.getId());
+        } else {
+            insideDeployment.remove(player.getUniqueId());
+        }
+
+        // --- IN → OUT: reach end zone (complete) ---
+        if (deployment.isInEndZone(to)) {
+            if (session.isStarted()) session.stopTimer(System.currentTimeMillis());
+            long durationMs = session.getElapsedMs(System.currentTimeMillis());
+            String timeStr = club.sitmc.sitParkourWarrior.board.BoardRenderer.formatTime(durationMs);
+            String coloredTitle = map.getDifficulty().getTitleColor() + map.getTitle();
+            Msg.send(player, "您已通过 " + coloredTitle + "（用时：" + timeStr + "）。");
+            sessionManager.endSession(player, false);
+            insideDeployment.remove(player.getUniqueId());
             return;
         }
 
-        // Inside/outside tracking
-        boolean wasInside = session.isInsideRegion();
-        boolean inside = region.contains(to);
-        if (inside) insideDeployment.put(player.getUniqueId(), deployment.getId());
-        else insideDeployment.remove(player.getUniqueId());
-
-        if (!wasInside && inside) {
-            session.setInsideRegion(true);
-        } else if (wasInside && !inside) {
-            if (!session.isCompleted() && session.isStarted()) session.stopTimer(System.currentTimeMillis());
-            session.setInsideRegion(false);
-            session.setInsideStart(false);
-        }
-
-        // Start zone: begin timer + show title
-        boolean inStart = deployment.isInStartZone(to);
-        if (inStart && !session.isInsideStart()) {
-            if (!session.isStarted()) {
-                session.startTimer(System.currentTimeMillis());
+        // --- IN → IN or IN → OUT: leaving the region ---
+        if (!inRegion) {
+            int bx = to.getBlockX(), bz = to.getBlockZ();
+            boolean inXz = bx >= region.getMinX() && bx <= region.getMaxX()
+                    && bz >= region.getMinZ() && bz <= region.getMaxZ();
+            if (inXz && to.getBlockY() < region.getMinY()) {
+                // Bottom fall → teleport back to start, stay IN
+                sessionManager.teleportToCheckpoint(player);
+            } else {
+                // Side/top exit → silent OUT
+                sessionManager.endSession(player, false);
+                insideDeployment.remove(player.getUniqueId());
             }
-            player.sendTitle(map.getDifficulty().getTitleColor() + map.getTitle(),
-                    map.getSubtitle() != null ? map.getSubtitle() : "", 10, 40, 10);
-            session.setInsideStart(true);
-        } else if (!inStart && session.isInsideStart()) {
-            session.setInsideStart(false);
-        }
-
-        // End zone: finish level
-        if (deployment.isInEndZone(to)) {
-            sessionManager.endSession(player, true);
         }
     }
 

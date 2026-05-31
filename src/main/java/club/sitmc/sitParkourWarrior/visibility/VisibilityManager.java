@@ -43,12 +43,12 @@ public class VisibilityManager {
     public void scanAndUpdate() {
         if (sessionManager == null) return;
 
-        // Collect eligible players
+        // Collect eligible players from active runs only (not full server scan)
         List<Player> eligible = new ArrayList<>();
-        for (Player p : Bukkit.getOnlinePlayers()) {
+        for (java.util.UUID id : sessionManager.getActiveRunPlayerIds()) {
+            Player p = Bukkit.getPlayer(id);
+            if (p == null) continue;
             if (!pkwWorldManager.isPkwWorld(p.getWorld())) continue;
-            RunProgress rp = sessionManager.getRunProgress(p.getUniqueId());
-            if (rp == null) continue;
             eligible.add(p);
         }
 

@@ -34,6 +34,36 @@ public class MapManager {
         return Collections.unmodifiableMap(maps);
     }
 
+    /** A deployment together with its owning map, keyed by world name. */
+    public static class WorldDeployment {
+        public final ParkourMap map;
+        public final Deployment dep;
+        WorldDeployment(ParkourMap map, Deployment dep) { this.map = map; this.dep = dep; }
+    }
+
+    private final Map<String, List<WorldDeployment>> worldDeployments = new HashMap<>();
+
+    /** Get all deployments in a specific world (from the cached index). */
+    public List<WorldDeployment> getWorldDeployments(String worldName) {
+        List<WorldDeployment> list = worldDeployments.get(worldName);
+        return list != null ? list : Collections.emptyList();
+    }
+
+    /** Rebuild the world→deployment index. Call after loadAll / deploy / undeploy. */
+    public void rebuildWorldIndex() {
+        worldDeployments.clear();
+        for (ParkourMap map : maps.values()) {
+            for (Deployment dep : map.getDeployments()) {
+                Region r = dep.getRegion();
+                if (r == null) continue;
+                String worldName = r.getWorldName();
+                if (worldName == null || worldName.isBlank()) continue;
+                worldDeployments.computeIfAbsent(worldName, k -> new ArrayList<>())
+                        .add(new WorldDeployment(map, dep));
+            }
+        }
+    }
+
     public ParkourMap getMap(String id) {
         if (id == null) {
             return null;
@@ -150,6 +180,7 @@ public class MapManager {
         File file = new File(mapFolder, "map.yml");
         try {
             config.save(file);
+            rebuildWorldIndex();
             return true;
         } catch (IOException e) {
             plugin.getLogger().warning("Failed to save map " + map.getId() + ": " + e.getMessage());
@@ -301,6 +332,7 @@ public class MapManager {
                                 + ", 消息=" + e.getMessage(), e);
             }
         }
+        rebuildWorldIndex();
     }
 
     public boolean isRegionTooLarge(Region region) {

@@ -238,6 +238,10 @@ public class SessionManager {
         runProgresses.put(playerId, rp);
     }
 
+    public java.util.Set<java.util.UUID> getActiveRunPlayerIds() {
+        return java.util.Collections.unmodifiableSet(runProgresses.keySet());
+    }
+
     public void clearAllRunProgresses() {
         runProgresses.clear();
     }

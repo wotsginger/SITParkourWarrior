@@ -905,6 +905,7 @@ public class DPCommand implements CommandExecutor, TabCompleter {
         mapManager.loadAll();
         dynamicService.startAllDeployed();
         countdownScoring.load();
+        recordsManager.reload();
         courseLayoutAnalyzer.recomputeAllPkwWorlds();
         Msg.send(sender, "已重载关卡配置。");
         return true;

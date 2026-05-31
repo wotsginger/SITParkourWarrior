@@ -225,23 +225,21 @@ public class PlayerMoveListener implements Listener {
 
         // --- OUT state: try to enter a LEVEL's start zone ---
         if (session == null) {
-            for (ParkourMap map : mapManager.getMaps().values()) {
-                if (map.getNodeType() != NodeType.LEVEL) continue;
-                for (Deployment dep : map.getDeployments()) {
-                    if (dep.isInStartZone(to)) {
-                        sessionManager.startSession(player, map, dep);
-                        ParkourSession s = sessionManager.getSession(player.getUniqueId());
-                        if (s != null) {
-                            s.setInsideRegion(true);
-                            s.startTimer(System.currentTimeMillis());
-                            player.sendTitle(
-                                    map.getDifficulty().getTitleColor() + map.getTitle(),
-                                    map.getSubtitle() != null ? map.getSubtitle() : "",
-                                    10, 40, 10);
-                        }
-                        insideDeployment.put(player.getUniqueId(), dep.getId());
-                        return;
+            for (MapManager.WorldDeployment wd : mapManager.getWorldDeployments(to.getWorld().getName())) {
+                if (wd.map.getNodeType() != NodeType.LEVEL) continue;
+                if (wd.dep.isInStartZone(to)) {
+                    sessionManager.startSession(player, wd.map, wd.dep);
+                    ParkourSession s = sessionManager.getSession(player.getUniqueId());
+                    if (s != null) {
+                        s.setInsideRegion(true);
+                        s.startTimer(System.currentTimeMillis());
+                        player.sendTitle(
+                                wd.map.getDifficulty().getTitleColor() + wd.map.getTitle(),
+                                wd.map.getSubtitle() != null ? wd.map.getSubtitle() : "",
+                                10, 40, 10);
                     }
+                    insideDeployment.put(player.getUniqueId(), wd.dep.getId());
+                    return;
                 }
             }
             insideDeployment.remove(player.getUniqueId());
@@ -309,40 +307,32 @@ public class PlayerMoveListener implements Listener {
         String worldName = to.getWorld().getName();
         club.sitmc.sitParkourWarrior.config.TimingMode mode = pkwWorldManager.getTimingMode(to.getWorld());
 
-        for (ParkourMap map : mapManager.getMaps().values()) {
-            NodeType type = map.getNodeType();
-            if (type != NodeType.GLOBAL_START && type != NodeType.GLOBAL_END) {
-                continue;
-            }
-            for (Deployment dep : map.getDeployments()) {
-                if (type == NodeType.GLOBAL_START) {
-                    if (dep.isInStartZone(to)) {
+        for (MapManager.WorldDeployment wd : mapManager.getWorldDeployments(worldName)) {
+            NodeType type = wd.map.getNodeType();
+            if (type != NodeType.GLOBAL_START && type != NodeType.GLOBAL_END) continue;
+            if (type == NodeType.GLOBAL_START) {
+                if (wd.dep.isInStartZone(to)) {
+                    sessionManager.startFullCourse(player.getUniqueId());
+                    return;
+                }
+            } else {
+                if (wd.dep.isInEndZone(to)) {
+                    if (sessionManager.getRunProgress(player.getUniqueId()) != null) {
+                        String endTier = wd.map.getEndTier().toConfigString();
                         if (mode == club.sitmc.sitParkourWarrior.config.TimingMode.COUNTDOWN) {
-                            sessionManager.startFullCourse(player.getUniqueId());
+                            sessionManager.finishCountdownByEnd(player, worldName, endTier);
                         } else {
-                            sessionManager.startFullCourse(player.getUniqueId());
+                            sessionManager.finishFullCourse(player, wd.map.getId(), wd.dep.getId(), endTier);
                         }
-                        return;
+                        sessionManager.endSession(player, false);
+                        sessionManager.cleanupPlayerEquipment(player);
+                        player.setFallDistance(0f);
+                        player.setVelocity(new org.bukkit.util.Vector(0, 0, 0));
+                        player.teleport(to.getWorld().getSpawnLocation());
+                    } else {
+                        Msg.send(player, "你未从全局起点出发，无法结算全程计时。");
                     }
-                } else {
-                    if (dep.isInEndZone(to)) {
-                        if (sessionManager.getRunProgress(player.getUniqueId()) != null) {
-                            String endTier = map.getEndTier().toConfigString();
-                            if (mode == club.sitmc.sitParkourWarrior.config.TimingMode.COUNTDOWN) {
-                                sessionManager.finishCountdownByEnd(player, worldName, endTier);
-                            } else {
-                                sessionManager.finishFullCourse(player, map.getId(), dep.getId(), endTier);
-                            }
-                            sessionManager.endSession(player, false);
-                            sessionManager.cleanupPlayerEquipment(player);
-                            player.setFallDistance(0f);
-                            player.setVelocity(new org.bukkit.util.Vector(0, 0, 0));
-                            player.teleport(to.getWorld().getSpawnLocation());
-                        } else {
-                            Msg.send(player, "你未从全局起点出发，无法结算全程计时。");
-                        }
-                        return;
-                    }
+                    return;
                 }
             }
         }
@@ -372,32 +362,25 @@ public class PlayerMoveListener implements Listener {
      */
     private boolean handleBranchEndTeleport(Player player, Location to) {
         String worldName = to.getWorld().getName();
-        for (ParkourMap map : mapManager.getMaps().values()) {
-            if (map.getNodeType() != NodeType.BRANCH_END) continue;
-            for (Deployment dep : map.getDeployments()) {
-                if (!dep.isInEndZone(to)) continue;
+        for (MapManager.WorldDeployment wd : mapManager.getWorldDeployments(worldName)) {
+            if (wd.map.getNodeType() != NodeType.BRANCH_END) continue;
+            if (!wd.dep.isInEndZone(to)) continue;
 
-                // Found a BRANCH_END end point nearby — look up binding.
-                CourseLayoutAnalyzer.BranchBindingInfo binding = courseLayoutAnalyzer.getBranchBinding(
-                        worldName, map.getId(), dep.getId());
-                if (binding == null) {
-                    // No binding: safe fallback — teleport to current checkpoint if any.
-                    ParkourSession session = sessionManager.getSession(player.getUniqueId());
-                    if (session != null) {
-                        sessionManager.teleportToCheckpoint(player);
-                    }
-                    return true;
-                }
-
-                // Resolve the bound FORK deployment.
-                ParkourMap forkMap = mapManager.getMap(binding.forkMapId);
-                if (forkMap == null || forkMap.getNodeType() != NodeType.FORK) return true;
-                Deployment forkDep = forkMap.getDeployment(binding.forkDepId);
-                if (forkDep == null) return true;
-
-                sessionManager.handoffToFork(player, forkMap, forkDep, binding.forkPoint);
+            CourseLayoutAnalyzer.BranchBindingInfo binding = courseLayoutAnalyzer.getBranchBinding(
+                    worldName, wd.map.getId(), wd.dep.getId());
+            if (binding == null) {
+                ParkourSession session = sessionManager.getSession(player.getUniqueId());
+                if (session != null) sessionManager.teleportToCheckpoint(player);
                 return true;
             }
+
+            ParkourMap forkMap = mapManager.getMap(binding.forkMapId);
+            if (forkMap == null || forkMap.getNodeType() != NodeType.FORK) return true;
+            Deployment forkDep = forkMap.getDeployment(binding.forkDepId);
+            if (forkDep == null) return true;
+
+            sessionManager.handoffToFork(player, forkMap, forkDep, binding.forkPoint);
+            return true;
         }
         return false;
     }
@@ -413,24 +396,19 @@ public class PlayerMoveListener implements Listener {
      * @return true if a handoff was executed
      */
     private boolean checkHandoff(Player player, ParkourSession session, Location to) {
-        for (ParkourMap map : mapManager.getMaps().values()) {
-            if (map.getNodeType() == NodeType.GLOBAL_START) {
-                continue;
-            }
-            for (Deployment dep : map.getDeployments()) {
-                if (map.getId().equalsIgnoreCase(session.getMapId())
-                        && dep.getId().equals(session.getDeploymentId())) {
-                    continue;
-                }
-                List<Location> entryPoints = getEntryPoints(map, dep);
-                for (Location ep : entryPoints) {
-                    if (isNear(to, ep)) {
-                        if (session.getState() == SessionState.RUNNING) {
-                            insideDeployment.remove(player.getUniqueId());
-                        }
-                        sessionManager.handoffToNextDeployment(player, session, map, dep, ep);
-                        return true;
+        for (MapManager.WorldDeployment wd : mapManager.getWorldDeployments(to.getWorld().getName())) {
+            if (wd.map.getNodeType() == NodeType.GLOBAL_START) continue;
+            if (wd.map.getId().equalsIgnoreCase(session.getMapId())
+                    && wd.dep.getId().equals(session.getDeploymentId())) continue;
+
+            List<Location> entryPoints = getEntryPoints(wd.map, wd.dep);
+            for (Location ep : entryPoints) {
+                if (isNear(to, ep)) {
+                    if (session.getState() == SessionState.RUNNING) {
+                        insideDeployment.remove(player.getUniqueId());
                     }
+                    sessionManager.handoffToNextDeployment(player, session, wd.map, wd.dep, ep);
+                    return true;
                 }
             }
         }
@@ -535,18 +513,16 @@ public class PlayerMoveListener implements Listener {
      */
     private DeploymentMatch findDeploymentByEntryPoint(Location location) {
         if (location == null || location.getWorld() == null) return null;
-        for (ParkourMap map : mapManager.getMaps().values()) {
-            NodeType type = map.getNodeType();
+        for (MapManager.WorldDeployment wd : mapManager.getWorldDeployments(location.getWorld().getName())) {
+            NodeType type = wd.map.getNodeType();
             if (type == NodeType.GLOBAL_END || type == NodeType.BRANCH_END) continue;
-            for (Deployment dep : map.getDeployments()) {
-                if (type == NodeType.FORK) {
-                    List<Location> fps = CourseLinker.resolveForkBranchPoints(map, dep);
-                    for (Location fp : fps) {
-                        if (isNear(location, fp)) return new DeploymentMatch(map, dep);
-                    }
-                } else {
-                    if (dep.isInStartZone(location)) return new DeploymentMatch(map, dep);
+            if (type == NodeType.FORK) {
+                List<Location> fps = CourseLinker.resolveForkBranchPoints(wd.map, wd.dep);
+                for (Location fp : fps) {
+                    if (isNear(location, fp)) return new DeploymentMatch(wd.map, wd.dep);
                 }
+            } else {
+                if (wd.dep.isInStartZone(location)) return new DeploymentMatch(wd.map, wd.dep);
             }
         }
         return null;

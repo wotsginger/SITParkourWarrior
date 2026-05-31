@@ -16,76 +16,77 @@ import java.util.UUID;
 /**
  * Manages records.yml — active runs (for disconnect/reconnect) and
  * per-world leaderboards (standard / advance / expect / countdown).
+ * Uses in-memory cache; all reads hit the cache, writes update both
+ * cache and disk synchronously.
  */
 public class RecordsManager {
 
     private final File file;
+    private YamlConfiguration cache;
 
     public RecordsManager(File dataFolder) {
         this.file = new File(dataFolder, "records.yml");
+        this.cache = loadFromDisk();
+    }
+
+    /** Reload cache from disk (called on /sitpkw reload). */
+    public void reload() {
+        this.cache = loadFromDisk();
     }
 
     // ---------------------------------------------------------------
     // Active-run persistence (disconnect / reconnect)
     // ---------------------------------------------------------------
 
-    /**
-     * Save active run with categorized medals (COUNTDOWN-compatible).
-     */
     public void saveActiveRunFull(String worldName, UUID playerId, String playerName,
                                   long elapsedMs, int medals, int stone, int bronze, int silver, int gold,
                                   Map<String, String> claimedLevels) {
-        YamlConfiguration config = load();
         String base = "worlds." + worldName + ".active." + playerId.toString();
-        config.set(base + ".name", playerName);
-        config.set(base + ".elapsed_ms", elapsedMs);
-        config.set(base + ".medals", medals);
-        config.set(base + ".stone", stone);
-        config.set(base + ".bronze", bronze);
-        config.set(base + ".silver", silver);
-        config.set(base + ".gold", gold);
+        cache.set(base + ".name", playerName);
+        cache.set(base + ".elapsed_ms", elapsedMs);
+        cache.set(base + ".medals", medals);
+        cache.set(base + ".stone", stone);
+        cache.set(base + ".bronze", bronze);
+        cache.set(base + ".silver", silver);
+        cache.set(base + ".gold", gold);
         if (!claimedLevels.isEmpty()) {
-            config.createSection(base + ".claimed_levels", claimedLevels);
+            cache.createSection(base + ".claimed_levels", claimedLevels);
         }
-        save(config);
+        persist();
     }
 
     @SuppressWarnings("unchecked")
     public SavedRunData loadAndClearActiveRun(String worldName, UUID playerId) {
-        YamlConfiguration config = load();
         String base = "worlds." + worldName + ".active." + playerId.toString();
-        if (!config.contains(base)) return null;
+        if (!cache.contains(base)) return null;
 
-        String name = config.getString(base + ".name");
-        long elapsedMs = config.getLong(base + ".elapsed_ms");
-        int medals = config.getInt(base + ".medals");
-        int stone = config.getInt(base + ".stone");
-        int bronze = config.getInt(base + ".bronze");
-        int silver = config.getInt(base + ".silver");
-        int gold = config.getInt(base + ".gold");
+        String name = cache.getString(base + ".name");
+        long elapsedMs = cache.getLong(base + ".elapsed_ms");
+        int medals = cache.getInt(base + ".medals");
+        int stone = cache.getInt(base + ".stone");
+        int bronze = cache.getInt(base + ".bronze");
+        int silver = cache.getInt(base + ".silver");
+        int gold = cache.getInt(base + ".gold");
 
         Map<String, String> claimed = new LinkedHashMap<>();
-        ConfigurationSection cs = config.getConfigurationSection(base + ".claimed_levels");
+        ConfigurationSection cs = cache.getConfigurationSection(base + ".claimed_levels");
         if (cs != null) {
             for (String key : cs.getKeys(false)) {
                 claimed.put(key, cs.getString(key, "countup"));
             }
         } else {
-            // Old format: list of keys
-            List<String> oldList = config.getStringList(base + ".claimed_levels");
+            List<String> oldList = cache.getStringList(base + ".claimed_levels");
             for (String key : oldList) claimed.put(key, "countup");
         }
 
-        config.set(base, null);
-        save(config);
-
+        cache.set(base, null);
+        persist();
         return new SavedRunData(name, elapsedMs, medals, stone, bronze, silver, gold, claimed);
     }
 
     public void clearActiveRun(String worldName, UUID playerId) {
-        YamlConfiguration config = load();
-        config.set("worlds." + worldName + ".active." + playerId, null);
-        save(config);
+        cache.set("worlds." + worldName + ".active." + playerId, null);
+        persist();
     }
 
     // ---------------------------------------------------------------
@@ -94,26 +95,24 @@ public class RecordsManager {
 
     public boolean saveRecord(String worldName, String tier, UUID playerId,
                               String playerName, long timeMs, int medals) {
-        YamlConfiguration config = load();
         String base = "worlds." + worldName + "." + tier + "." + playerId.toString();
-        long existing = config.getLong(base + ".time_ms", Long.MAX_VALUE);
+        long existing = cache.getLong(base + ".time_ms", Long.MAX_VALUE);
         if (timeMs < existing) {
-            config.set(base + ".name", playerName);
-            config.set(base + ".time_ms", timeMs);
-            config.set(base + ".medals", medals);
-            save(config);
+            cache.set(base + ".name", playerName);
+            cache.set(base + ".time_ms", timeMs);
+            cache.set(base + ".medals", medals);
+            persist();
             return true;
         }
-        if (!playerName.equals(config.getString(base + ".name"))) {
-            config.set(base + ".name", playerName);
-            save(config);
+        if (!playerName.equals(cache.getString(base + ".name"))) {
+            cache.set(base + ".name", playerName);
+            persist();
         }
         return false;
     }
 
     public List<RankEntry> getTop(String worldName, String tier, int limit) {
-        YamlConfiguration config = load();
-        ConfigurationSection section = config.getConfigurationSection("worlds." + worldName + "." + tier);
+        ConfigurationSection section = cache.getConfigurationSection("worlds." + worldName + "." + tier);
         if (section == null) return Collections.emptyList();
 
         List<RankEntry> entries = new ArrayList<>();
@@ -139,31 +138,29 @@ public class RecordsManager {
                                         String playerName, int score,
                                         int stone, int bronze, int silver, int gold,
                                         long timeMs, String endTier) {
-        YamlConfiguration config = load();
         String base = "worlds." + worldName + ".countdown." + playerId.toString();
-        int existing = config.getInt(base + ".score", Integer.MIN_VALUE);
+        int existing = cache.getInt(base + ".score", Integer.MIN_VALUE);
         if (score > existing) {
-            config.set(base + ".name", playerName);
-            config.set(base + ".score", score);
-            config.set(base + ".stone", stone);
-            config.set(base + ".bronze", bronze);
-            config.set(base + ".silver", silver);
-            config.set(base + ".gold", gold);
-            config.set(base + ".time_ms", timeMs);
-            if (endTier != null) config.set(base + ".end_tier", endTier);
-            save(config);
+            cache.set(base + ".name", playerName);
+            cache.set(base + ".score", score);
+            cache.set(base + ".stone", stone);
+            cache.set(base + ".bronze", bronze);
+            cache.set(base + ".silver", silver);
+            cache.set(base + ".gold", gold);
+            cache.set(base + ".time_ms", timeMs);
+            if (endTier != null) cache.set(base + ".end_tier", endTier);
+            persist();
             return true;
         }
-        if (!playerName.equals(config.getString(base + ".name"))) {
-            config.set(base + ".name", playerName);
-            save(config);
+        if (!playerName.equals(cache.getString(base + ".name"))) {
+            cache.set(base + ".name", playerName);
+            persist();
         }
         return false;
     }
 
     public List<CountdownRankEntry> getCountdownTop(String worldName, int limit) {
-        YamlConfiguration config = load();
-        ConfigurationSection section = config.getConfigurationSection("worlds." + worldName + ".countdown");
+        ConfigurationSection section = cache.getConfigurationSection("worlds." + worldName + ".countdown");
         if (section == null) return Collections.emptyList();
 
         List<CountdownRankEntry> entries = new ArrayList<>();
@@ -186,64 +183,48 @@ public class RecordsManager {
         return entries;
     }
 
-    /**
-     * Delete a single record. Returns the deleted player name, or null if not found.
-     * @param uuidOrName  UUID string or player name (case-insensitive match).
-     */
     public String deleteRecord(String worldName, String tier, String uuidOrName) {
-        YamlConfiguration config = load();
         String base = "worlds." + worldName + "." + tier;
-        ConfigurationSection section = config.getConfigurationSection(base);
+        ConfigurationSection section = cache.getConfigurationSection(base);
         if (section == null) return null;
 
-        // Try as UUID first
         if (section.contains(uuidOrName)) {
             String name = section.getString(uuidOrName + ".name");
-            config.set(base + "." + uuidOrName, null);
-            save(config);
+            cache.set(base + "." + uuidOrName, null);
+            persist();
             return name != null ? name : uuidOrName;
         }
 
-        // Search by player name (case-insensitive)
         String lower = uuidOrName.toLowerCase();
         for (String key : section.getKeys(false)) {
             String storedName = section.getString(key + ".name");
             if (storedName != null && storedName.toLowerCase().equals(lower)) {
-                config.set(base + "." + key, null);
-                save(config);
+                cache.set(base + "." + key, null);
+                persist();
                 return storedName;
             }
         }
         return null;
     }
 
-    /** Get all world names that have records. */
     public java.util.Set<String> getRecordedWorldNames() {
-        YamlConfiguration config = load();
-        ConfigurationSection worlds = config.getConfigurationSection("worlds");
+        ConfigurationSection worlds = cache.getConfigurationSection("worlds");
         if (worlds == null) return java.util.Collections.emptySet();
         return worlds.getKeys(false);
     }
 
-    /**
-     * Count how many worlds a player appears in for standard/advance/expect.
-     * Returns {standard, advance, expect} counts. Does NOT include countdown.
-     */
     public int[] countPlayerStats(String uuidOrName) {
-        int[] counts = new int[3]; // standard, advance, expect
-        YamlConfiguration config = load();
-        ConfigurationSection worlds = config.getConfigurationSection("worlds");
+        int[] counts = new int[3];
+        ConfigurationSection worlds = cache.getConfigurationSection("worlds");
         if (worlds == null) return counts;
 
         String lower = uuidOrName.toLowerCase();
         for (String worldName : worlds.getKeys(false)) {
             for (int t = 0; t < 3; t++) {
                 String tier = t == 0 ? "standard" : (t == 1 ? "advance" : "expect");
-                ConfigurationSection tierSec = config.getConfigurationSection("worlds." + worldName + "." + tier);
+                ConfigurationSection tierSec = cache.getConfigurationSection("worlds." + worldName + "." + tier);
                 if (tierSec == null) continue;
-                // Try direct UUID key match
                 if (tierSec.contains(uuidOrName)) { counts[t]++; continue; }
-                // Search by name (case-insensitive)
                 boolean found = false;
                 for (String key : tierSec.getKeys(false)) {
                     String stored = tierSec.getString(key + ".name");
@@ -257,11 +238,9 @@ public class RecordsManager {
         return counts;
     }
 
-    /** Get player names for a given world+tier. */
     public java.util.List<String> getPlayerNames(String worldName, String tier) {
         java.util.List<String> names = new java.util.ArrayList<>();
-        YamlConfiguration config = load();
-        ConfigurationSection section = config.getConfigurationSection("worlds." + worldName + "." + tier);
+        ConfigurationSection section = cache.getConfigurationSection("worlds." + worldName + "." + tier);
         if (section == null) return names;
         for (String key : section.getKeys(false)) {
             String name = section.getString(key + ".name");
@@ -274,13 +253,13 @@ public class RecordsManager {
     // File I/O
     // ---------------------------------------------------------------
 
-    private YamlConfiguration load() {
+    private YamlConfiguration loadFromDisk() {
         if (file.exists()) return YamlConfiguration.loadConfiguration(file);
         return new YamlConfiguration();
     }
 
-    private void save(YamlConfiguration config) {
-        try { config.save(file); }
+    private void persist() {
+        try { cache.save(file); }
         catch (IOException e) { System.err.println("[SITPKW] Failed to save records.yml: " + e.getMessage()); }
     }
 

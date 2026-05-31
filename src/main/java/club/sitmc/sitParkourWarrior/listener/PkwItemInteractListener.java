@@ -103,17 +103,16 @@ public class PkwItemInteractListener implements Listener {
     }
 
     private void handleQuit(Player player) {
-        if (sessionManager.getRunProgress(player.getUniqueId()) == null
-                && sessionManager.getSession(player.getUniqueId()) == null) {
-            Msg.send(player, "你没有进行中的跑酷。");
-            return;
+        boolean hadRun = sessionManager.getRunProgress(player.getUniqueId()) != null
+                || sessionManager.getSession(player.getUniqueId()) != null;
+        if (hadRun) {
+            sessionManager.quitRun(player);
+            sessionManager.endSession(player, false);
         }
-        sessionManager.quitRun(player);
-        sessionManager.endSession(player, false);
         sessionManager.cleanupPlayerEquipment(player);
         player.setFallDistance(0f);
         player.setVelocity(new org.bukkit.util.Vector(0, 0, 0));
         player.teleport(player.getWorld().getSpawnLocation());
-        Msg.send(player, "已放弃当前跑酷。");
+        Msg.send(player, hadRun ? "已放弃当前跑酷。" : "已传送回出生点。");
     }
 }

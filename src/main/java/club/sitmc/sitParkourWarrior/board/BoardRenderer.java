@@ -82,8 +82,19 @@ public final class BoardRenderer {
         sb.append(medal).append(String.format("%2d. ", rank))
           .append("§f").append(e.playerName)
           .append("  §b").append(e.score).append("分")
-          .append("  §7(石").append(e.stone).append("铜").append(e.bronze)
-          .append("银").append(e.silver).append("金").append(e.gold).append(")\n");
+          .append("  §7石×").append(e.stone).append(" 铜×").append(e.bronze)
+          .append(" 银×").append(e.silver).append(" 金×").append(e.gold)
+          .append("  §7").append(endTierDisplay(e.endTier)).append("\n");
+    }
+
+    private static String endTierDisplay(String tier) {
+        if (tier == null) return "超时";
+        switch (tier) {
+            case "easy":   return "简单";
+            case "normal": return "普通";
+            case "hard":   return "困难";
+            default:       return tier;
+        }
     }
 
     private static String rankMedal(int rank) {

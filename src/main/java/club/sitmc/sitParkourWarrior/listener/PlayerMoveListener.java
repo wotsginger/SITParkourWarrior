@@ -15,10 +15,12 @@ import club.sitmc.sitParkourWarrior.session.SessionState;
 import club.sitmc.sitParkourWarrior.util.Msg;
 import org.bukkit.Location;
 import org.bukkit.Material;
+import org.bukkit.NamespacedKey;
 import org.bukkit.entity.Player;
 import org.bukkit.event.EventHandler;
 import org.bukkit.event.Listener;
 import org.bukkit.event.player.PlayerMoveEvent;
+import org.bukkit.persistence.PersistentDataType;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -49,20 +51,50 @@ public class PlayerMoveListener implements Listener {
             return;
         }
 
-        // World gate: gameplay only runs in PKW worlds.
-        if (!pkwWorldManager.isPkwWorld(to.getWorld())) {
+        boolean isPkw = pkwWorldManager.isPkwWorld(to.getWorld());
+        Player player = event.getPlayer();
+
+        if (from.getBlockX() == to.getBlockX()
+                && from.getBlockY() == to.getBlockY()
+                && from.getBlockZ() == to.getBlockZ()) {
             return;
         }
 
-        // Death-line check must execute before the same-block return below.
-        // A purely vertical fall can produce consecutive move events whose
-        // block Y differs but X/Z block coords are unchanged, making the
-        // same-block check *not* match — however, slow diagonal movement or
-        // sub-block Y changes within the same integer block can still be
-        // skipped.  Placing the check first guarantees every move event with
-        // a valid session is tested against the current death-line.
-        Player player = event.getPlayer();
+        if (selectionManager.isEditing(player)) {
+            return;
+        }
+
+        if (isPkw) {
+            handlePkwMove(player, from, to);
+        } else {
+            handleSimpleMove(player, from, to);
+        }
+    }
+
+    // ============ Segment special-mode check ============
+
+    private static boolean isInSegmentSpecialMode(Player player) {
+        var key = new NamespacedKey("sitsegment", "special_mode");
+        Byte v = player.getPersistentDataContainer().get(key, PersistentDataType.BYTE);
+        return v != null && v == (byte) 1;
+    }
+
+    // ============ PKW-world full gameplay ============
+
+    private void handlePkwMove(Player player, Location from, Location to) {
+        // Segment special mode: quit active run and stay silent
+        if (isInSegmentSpecialMode(player)) {
+            ParkourSession s = sessionManager.getSession(player.getUniqueId());
+            if (s != null || sessionManager.getRunProgress(player.getUniqueId()) != null) {
+                sessionManager.quitRun(player);
+                sessionManager.endSession(player, false);
+            }
+            return;
+        }
+
         ParkourSession session = sessionManager.getSession(player.getUniqueId());
+
+        // Death-line check
         if (session != null && to.getBlockY() < session.getDeathLineY()) {
             ParkourMap deathMap = mapManager.getMap(session.getMapId());
             if (deathMap != null && deathMap.getNodeType() == NodeType.FORK) {
@@ -73,7 +105,7 @@ public class PlayerMoveListener implements Listener {
             return;
         }
 
-        // Lava death: same fallback behavior as death-line.
+        // Lava death
         if (session != null && isLava(to)) {
             ParkourMap deathMap = mapManager.getMap(session.getMapId());
             if (deathMap != null && deathMap.getNodeType() == NodeType.FORK) {
@@ -84,28 +116,16 @@ public class PlayerMoveListener implements Listener {
             return;
         }
 
-        if (from.getBlockX() == to.getBlockX()
-                && from.getBlockY() == to.getBlockY()
-                && from.getBlockZ() == to.getBlockZ()) {
-            return;
-        }
-
-        // Full-course timing check: independent of session state.
+        // Full-course timing
         checkFullCourseTiming(player, to);
 
-        // Countdown zero-timeout check
+        // Countdown timeout
         checkCountdownTimeout(player, session);
 
-        if (selectionManager.isEditing(player)) {
-            return;
-        }
+        // BRANCH_END teleport
+        if (handleBranchEndTeleport(player, to)) return;
 
-        // ---- BRANCH_END teleport: intercept before normal handoff ----
-        if (handleBranchEndTeleport(player, to)) {
-            return;
-        }
-
-        // ---- No session: auto-start when entering an entry point ----
+        // No session: auto-start
         if (session == null) {
             DeploymentMatch match = findDeploymentByEntryPoint(to);
             if (match != null) {
@@ -121,44 +141,29 @@ public class PlayerMoveListener implements Listener {
         }
 
         ParkourMap map = mapManager.getMap(session.getMapId());
-        if (map == null) {
-            sessionManager.endSession(player, false);
-            return;
-        }
+        if (map == null) { sessionManager.endSession(player, false); return; }
         Deployment deployment = map.getDeployment(session.getDeploymentId());
-        if (deployment == null) {
-            sessionManager.endSession(player, false);
-            return;
-        }
+        if (deployment == null) { sessionManager.endSession(player, false); return; }
 
-        // ---- Handoff check for non-FORK nodes (RUNNING or AWAITING_HANDOFF) ----
+        // Handoff check
         if (map.getNodeType() != NodeType.FORK
                 && (session.getState() == SessionState.RUNNING || session.getState() == SessionState.AWAITING_HANDOFF)) {
-            if (checkHandoff(player, session, to)) {
-                return;
-            }
-            if (session.getState() == SessionState.AWAITING_HANDOFF) {
-                return; // No matching entry point nearby, keep waiting.
-            }
-            // RUNNING with no match: fall through to normal RUNNING logic below.
+            if (checkHandoff(player, session, to)) return;
+            if (session.getState() == SessionState.AWAITING_HANDOFF) return;
         }
 
-        // ---- FORK runtime: track visited points, check handoff out ----
+        // FORK runtime
         if (map.getNodeType() == NodeType.FORK) {
             handleForkRuntime(player, session, map, deployment, to);
             return;
         }
 
-        // ---- Active (RUNNING) session: timer, start, end logic ----
+        // LEVEL runtime
         Region region = deployment.getRegion();
         boolean wasInside = session.isInsideRegion();
         boolean inside = region != null && region.contains(to);
-
-        if (inside) {
-            insideDeployment.put(player.getUniqueId(), deployment.getId());
-        } else {
-            insideDeployment.remove(player.getUniqueId());
-        }
+        if (inside) insideDeployment.put(player.getUniqueId(), deployment.getId());
+        else insideDeployment.remove(player.getUniqueId());
 
         if (!wasInside && inside) {
             session.setInsideStart(false);
@@ -168,9 +173,7 @@ public class PlayerMoveListener implements Listener {
             }
             session.setInsideRegion(true);
         } else if (wasInside && !inside) {
-            if (!session.isCompleted() && session.isStarted()) {
-                session.stopTimer(System.currentTimeMillis());
-            }
+            if (!session.isCompleted() && session.isStarted()) session.stopTimer(System.currentTimeMillis());
             session.setInsideRegion(false);
             session.setInsideStart(false);
         }
@@ -181,20 +184,14 @@ public class PlayerMoveListener implements Listener {
                 session.setSkipResetAtStartOnce(false);
                 if (!session.isStarted()) {
                     session.startTimer(System.currentTimeMillis());
-                    player.sendTitle(
-                            map.getDifficulty().getTitleColor() + map.getTitle(),
-                            "",
-                            10, 40, 10
-                    );
+                    player.sendTitle(map.getDifficulty().getTitleColor() + map.getTitle(),
+                            map.getSubtitle() != null ? map.getSubtitle() : "", 10, 40, 10);
                 }
             } else {
                 session.resetTimer();
                 session.startTimer(System.currentTimeMillis());
-                player.sendTitle(
-                        map.getDifficulty().getTitleColor() + map.getTitle(),
-                        "",
-                        10, 40, 10
-                );
+                player.sendTitle(map.getDifficulty().getTitleColor() + map.getTitle(),
+                        map.getSubtitle() != null ? map.getSubtitle() : "", 10, 40, 10);
             }
             session.setPendingTitleAtStart(false);
             session.setInsideStart(true);
@@ -204,7 +201,94 @@ public class PlayerMoveListener implements Listener {
 
         if (deployment.isInEndZone(to)) {
             sessionManager.endSession(player, true);
+        }
+    }
+
+    // ============ Non-PKW simple single-level logic ============
+
+    private void handleSimpleMove(Player player, Location from, Location to) {
+        // Segment special mode: quit active session and stay silent
+        if (isInSegmentSpecialMode(player)) {
+            ParkourSession s = sessionManager.getSession(player.getUniqueId());
+            if (s != null) {
+                sessionManager.endSession(player, false);
+            }
             return;
+        }
+
+        ParkourSession session = sessionManager.getSession(player.getUniqueId());
+
+        // No session: auto-start when entering a LEVEL's region
+        if (session == null) {
+            for (ParkourMap map : mapManager.getMaps().values()) {
+                if (map.getNodeType() != NodeType.LEVEL) continue;
+                for (Deployment dep : map.getDeployments()) {
+                    Region r = dep.getRegion();
+                    if (r != null && r.contains(to)) {
+                        String current = insideDeployment.get(player.getUniqueId());
+                        if (current == null || !current.equals(dep.getId())) {
+                            sessionManager.startSession(player, map, dep);
+                        }
+                        insideDeployment.put(player.getUniqueId(), dep.getId());
+                        return;
+                    }
+                }
+            }
+            insideDeployment.remove(player.getUniqueId());
+            return;
+        }
+
+        // Only LEVEL sessions are valid in simple mode
+        ParkourMap map = mapManager.getMap(session.getMapId());
+        if (map == null || map.getNodeType() != NodeType.LEVEL) {
+            sessionManager.endSession(player, false);
+            return;
+        }
+        Deployment deployment = map.getDeployment(session.getDeploymentId());
+        if (deployment == null) {
+            sessionManager.endSession(player, false);
+            return;
+        }
+
+        Region region = deployment.getRegion();
+        if (region == null) return;
+
+        // Rectangular region fallback: fall below region → back to start
+        if (to.getBlockY() < region.getMinY()) {
+            sessionManager.teleportToCheckpoint(player);
+            return;
+        }
+
+        // Inside/outside tracking
+        boolean wasInside = session.isInsideRegion();
+        boolean inside = region.contains(to);
+        if (inside) insideDeployment.put(player.getUniqueId(), deployment.getId());
+        else insideDeployment.remove(player.getUniqueId());
+
+        if (!wasInside && inside) {
+            session.setInsideRegion(true);
+        } else if (wasInside && !inside) {
+            if (!session.isCompleted() && session.isStarted()) session.stopTimer(System.currentTimeMillis());
+            session.setInsideRegion(false);
+            session.setInsideStart(false);
+        }
+
+        // Start zone: begin timer + show title
+        boolean inStart = deployment.isInStartZone(to);
+        if (inStart && !session.isInsideStart()) {
+            if (!session.isStarted()) {
+                session.startTimer(System.currentTimeMillis());
+            }
+            player.sendTitle(map.getDifficulty().getTitleColor() + map.getTitle(),
+                    map.getSubtitle() != null ? map.getSubtitle() : "", 10, 40, 10);
+            session.setInsideStart(true);
+        } else if (!inStart && session.isInsideStart()) {
+            session.setInsideStart(false);
+        }
+
+        // End zone: finish level
+        if (deployment.isInEndZone(to)) {
+            sessionManager.endSession(player, true);
         }
     }
 

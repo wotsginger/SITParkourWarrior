@@ -13,6 +13,7 @@ import club.sitmc.sitParkourWarrior.map.NodeType;
 import club.sitmc.sitParkourWarrior.map.ParkourMap;
 import club.sitmc.sitParkourWarrior.map.Region;
 import club.sitmc.sitParkourWarrior.records.RecordsManager;
+import club.sitmc.sitParkourWarrior.visibility.VisibilityManager;
 import club.sitmc.sitParkourWarrior.util.Msg;
 import org.bukkit.Bukkit;
 import club.sitmc.sitParkourWarrior.map.PointLocation;
@@ -34,12 +35,14 @@ public class SessionManager {
     private final PkwWorldManager pkwWorldManager;
     private final CourseLayoutAnalyzer courseLayoutAnalyzer;
     private final CountdownScoringConfig countdownScoring;
+    private final VisibilityManager visibilityManager;
     private final Map<UUID, ParkourSession> sessions = new HashMap<>();
     private final Map<UUID, RunProgress> runProgresses = new HashMap<>();
 
     public SessionManager(SITParkourWarrior plugin, MapManager mapManager, DynamicService dynamicService,
                           RecordsManager recordsManager, PkwWorldManager pkwWorldManager,
-                          CourseLayoutAnalyzer courseLayoutAnalyzer, CountdownScoringConfig countdownScoring) {
+                          CourseLayoutAnalyzer courseLayoutAnalyzer, CountdownScoringConfig countdownScoring,
+                          VisibilityManager visibilityManager) {
         this.plugin = plugin;
         this.mapManager = mapManager;
         this.dynamicService = dynamicService;
@@ -47,6 +50,7 @@ public class SessionManager {
         this.pkwWorldManager = pkwWorldManager;
         this.courseLayoutAnalyzer = courseLayoutAnalyzer;
         this.countdownScoring = countdownScoring;
+        this.visibilityManager = visibilityManager;
     }
 
     public ParkourSession getSession(UUID playerId) {
@@ -138,6 +142,13 @@ public class SessionManager {
                 current.setInsideRegion(true);
                 current.setInsideStart(false);
                 current.setPendingTitleAtStart(true);
+            } else if (nodeType == NodeType.GLOBAL_START && deployment.isInStartZone(player.getLocation())) {
+                current.setInsideStart(false);
+                current.setPendingTitleAtStart(true);
+                player.sendTitle(
+                        map.getDifficulty().getTitleColor() + map.getTitle(),
+                        map.getSubtitle() != null ? map.getSubtitle() : "",
+                        10, 40, 10);
             }
         });
         return true;
@@ -167,12 +178,12 @@ public class SessionManager {
                 }
             }
             long durationMs = session.getElapsedMs(System.currentTimeMillis());
-            double seconds = durationMs / 1000.0;
+            String timeStr = club.sitmc.sitParkourWarrior.board.BoardRenderer.formatTime(durationMs);
             if (map != null) {
                 String coloredTitle = map.getDifficulty().getTitleColor() + map.getTitle();
-                Msg.send(player, "您已通过 " + coloredTitle + "（用时：" + String.format("%.2f", seconds) + " 秒）。");
+                Msg.send(player, "您已通过 " + coloredTitle + "（用时：" + timeStr + "）。");
             } else {
-                Msg.send(player, "您已通过关卡（用时：" + String.format("%.2f", seconds) + " 秒）。");
+                Msg.send(player, "您已通过关卡（用时：" + timeStr + "）。");
             }
             session.setCompleted(true);
             session.setState(SessionState.AWAITING_HANDOFF);
@@ -227,14 +238,22 @@ public class SessionManager {
     }
 
     /**
-     * Award a medal for completing a LEVEL. Only works in COUNTUP worlds.
-     * Returns true if the level was newly claimed.
+     * Award a medal for completing a LEVEL in COUNTUP mode.
+     * Only main and branch levels count (+1 each). Final and unclassified
+     * levels do not award medals (final bonus comes from GLOBAL_END endTier).
      */
     public boolean claimLevelMedal(Player player, String mapId, String deploymentId) {
         if (player == null) return false;
         if (pkwWorldManager.getTimingMode(player.getWorld()) != TimingMode.COUNTUP) return false;
         RunProgress rp = runProgresses.get(player.getUniqueId());
         if (rp == null) return false;
+
+        // Only main and branch levels award medals
+        String worldName = player.getWorld().getName();
+        CourseLayoutAnalyzer.LevelRoleInfo role = courseLayoutAnalyzer.getLevelRole(worldName, mapId, deploymentId);
+        if (role == null || (!"main".equals(role.role) && !"branch".equals(role.role))) {
+            return false;
+        }
         return rp.claimLevel(mapId, deploymentId);
     }
 
@@ -248,7 +267,7 @@ public class SessionManager {
 
         progress.pause();
         long elapsedMs = progress.getElapsedMs();
-        double seconds = elapsedMs / 1000.0;
+        String timeStr = club.sitmc.sitParkourWarrior.board.BoardRenderer.formatTime(elapsedMs);
 
         // Award end-tier medals
         EndTier tier = EndTier.fromString(endTierStr);
@@ -261,27 +280,32 @@ public class SessionManager {
         progress.addEndTierMedals(bonus);
         int totalMedals = progress.getMedals();
 
-        Msg.send(player, "恭喜完成全程！总用时：" + String.format("%.2f", seconds)
-                + " 秒，奖牌数：" + totalMedals);
+        Msg.send(player, "恭喜完成全程！总用时：" + timeStr
+                + "，奖牌数：" + totalMedals);
 
-        // Determine ranking tier
-        String rankTier;
-        if (totalMedals >= 21) {
-            rankTier = "expect";
-        } else if (totalMedals >= 16) {
-            rankTier = "advance";
-        } else {
-            rankTier = "standard";
-        }
+        // Determine eligible tiers (downward-compatible)
+        java.util.List<String> eligibleTiers = new java.util.ArrayList<>();
+        if (totalMedals >= 21) eligibleTiers.add("expect");
+        if (totalMedals >= 16) eligibleTiers.add("advance");
+        eligibleTiers.add("standard");
 
-        // Archive to records (COUNTUP only)
+        visibilityManager.cleanupPlayer(player);
+        // Archive to records (COUNTUP only) — each tier independently
         if (pkwWorldManager.getTimingMode(player.getWorld()) == TimingMode.COUNTUP) {
             String worldName = player.getWorld().getName();
-            boolean isPb = recordsManager.saveRecord(worldName, rankTier,
-                    player.getUniqueId(), player.getName(), elapsedMs, totalMedals);
+            java.util.List<String> pbTiers = new java.util.ArrayList<>();
+            for (String t : eligibleTiers) {
+                if (recordsManager.saveRecord(worldName, t,
+                        player.getUniqueId(), player.getName(), elapsedMs, totalMedals)) {
+                    pbTiers.add(t);
+                }
+            }
             recordsManager.clearActiveRun(worldName, player.getUniqueId());
-            String pbMsg = isPb ? "（新个人最佳！）" : "";
-            Msg.send(player, "成绩归入 " + rankTier + " 榜" + pbMsg);
+            String msg = "成绩归入 " + String.join("、", eligibleTiers) + " 榜";
+            if (!pbTiers.isEmpty()) {
+                msg += "（" + String.join("、", pbTiers) + " 新个人最佳！）";
+            }
+            Msg.send(player, msg);
         }
 
         return true;
@@ -293,6 +317,7 @@ public class SessionManager {
     public void quitRun(Player player) {
         RunProgress rp = runProgresses.remove(player.getUniqueId());
         if (rp == null) return;
+        visibilityManager.cleanupPlayer(player);
         if (pkwWorldManager.isPkwWorld(player.getWorld())) {
             recordsManager.clearActiveRun(player.getWorld().getName(), player.getUniqueId());
         }
@@ -317,6 +342,16 @@ public class SessionManager {
         if (medalType == null) return null;
 
         return rp.claimLevelByType(mapId, deploymentId, medalType);
+    }
+
+    private static String endTierDisplay(String tier) {
+        if (tier == null) return "未到终点";
+        switch (tier) {
+            case "easy":   return "简单";
+            case "normal": return "普通";
+            case "hard":   return "困难";
+            default:       return tier;
+        }
     }
 
     private String roleToMedalType(CourseLayoutAnalyzer.LevelRoleInfo info) {
@@ -380,14 +415,15 @@ public class SessionManager {
         long elapsedMs = rp.getElapsedMs();
         double seconds = elapsedMs / 1000.0;
 
-        String endMsg = endTier != null ? "到达终点！" : "时间到！";
-        Msg.send(player, endMsg + " 得分: " + totalScore
-                + "（石" + stoneScore + " + 铜" + bronzeScore + " + 银" + silverScore + " + 金" + goldScore
-                + (endTier != null ? "）×" + String.format("%.2f", 1.0 + multiplier) : ""));
+        String endTierLabel = endTierDisplay(endTier);
+        String endMsg = endTier != null ? endTierLabel + "终点 完成！" : "时间到！";
+        Msg.send(player, endMsg + " 石×" + stone + " 铜×" + bronze + " 银×" + silver + " 金×" + gold
+                + "，总分 " + totalScore);
 
         boolean isPb = recordsManager.saveCountdownRecord(worldName,
                 player.getUniqueId(), player.getName(), totalScore,
-                stone, bronze, silver, gold, elapsedMs);
+                stone, bronze, silver, gold, elapsedMs, endTier);
+        visibilityManager.cleanupPlayer(player);
         recordsManager.clearActiveRun(worldName, player.getUniqueId());
         if (isPb) {
             Msg.send(player, "新个人最佳！");

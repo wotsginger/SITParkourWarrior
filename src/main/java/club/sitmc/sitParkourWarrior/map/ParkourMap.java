@@ -9,6 +9,7 @@ import java.util.List;
 public class ParkourMap {
     private final String id;
     private String title;
+    private String subtitle;
     private Difficulty difficulty = Difficulty.EASY;
     private Region region;
     private PointLocation start;
@@ -41,6 +42,14 @@ public class ParkourMap {
 
     public void setTitle(String title) {
         this.title = title;
+    }
+
+    public String getSubtitle() {
+        return subtitle;
+    }
+
+    public void setSubtitle(String subtitle) {
+        this.subtitle = subtitle;
     }
 
     public Difficulty getDifficulty() {

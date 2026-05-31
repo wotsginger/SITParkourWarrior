@@ -4,6 +4,7 @@ import club.sitmc.sitParkourWarrior.config.PkwWorldManager;
 import club.sitmc.sitParkourWarrior.records.RecordsManager;
 import club.sitmc.sitParkourWarrior.session.RunProgress;
 import club.sitmc.sitParkourWarrior.session.SessionManager;
+import club.sitmc.sitParkourWarrior.visibility.VisibilityManager;
 
 import org.bukkit.entity.Player;
 import org.bukkit.event.EventHandler;
@@ -15,12 +16,14 @@ public class PlayerQuitListener implements Listener {
     private final SessionManager sessionManager;
     private final PkwWorldManager pkwWorldManager;
     private final RecordsManager recordsManager;
+    private final VisibilityManager visibilityManager;
 
     public PlayerQuitListener(SessionManager sessionManager, PkwWorldManager pkwWorldManager,
-                              RecordsManager recordsManager) {
+                              RecordsManager recordsManager, VisibilityManager visibilityManager) {
         this.sessionManager = sessionManager;
         this.pkwWorldManager = pkwWorldManager;
         this.recordsManager = recordsManager;
+        this.visibilityManager = visibilityManager;
     }
 
     @EventHandler
@@ -37,6 +40,7 @@ public class PlayerQuitListener implements Listener {
                         rp.getClaimedLevelsWithTypes());
             }
         }
+        visibilityManager.cleanupPlayer(player);
         sessionManager.removeRunProgress(event.getPlayer().getUniqueId());
         sessionManager.endSession(event.getPlayer(), false);
     }

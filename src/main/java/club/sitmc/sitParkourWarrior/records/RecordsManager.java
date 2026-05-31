@@ -138,7 +138,7 @@ public class RecordsManager {
     public boolean saveCountdownRecord(String worldName, UUID playerId,
                                         String playerName, int score,
                                         int stone, int bronze, int silver, int gold,
-                                        long timeMs) {
+                                        long timeMs, String endTier) {
         YamlConfiguration config = load();
         String base = "worlds." + worldName + ".countdown." + playerId.toString();
         int existing = config.getInt(base + ".score", Integer.MIN_VALUE);
@@ -150,6 +150,7 @@ public class RecordsManager {
             config.set(base + ".silver", silver);
             config.set(base + ".gold", gold);
             config.set(base + ".time_ms", timeMs);
+            if (endTier != null) config.set(base + ".end_tier", endTier);
             save(config);
             return true;
         }
@@ -176,12 +177,97 @@ public class RecordsManager {
                 int silver = section.getInt(key + ".silver");
                 int gold = section.getInt(key + ".gold");
                 long timeMs = section.getLong(key + ".time_ms");
-                entries.add(new CountdownRankEntry(id, name, score, stone, bronze, silver, gold, timeMs));
+                String endTier = section.getString(key + ".end_tier");
+                entries.add(new CountdownRankEntry(id, name, score, stone, bronze, silver, gold, timeMs, endTier));
             } catch (IllegalArgumentException ignored) {}
         }
         entries.sort((a, b) -> Integer.compare(b.score, a.score));
         if (entries.size() > limit) entries = entries.subList(0, limit);
         return entries;
+    }
+
+    /**
+     * Delete a single record. Returns the deleted player name, or null if not found.
+     * @param uuidOrName  UUID string or player name (case-insensitive match).
+     */
+    public String deleteRecord(String worldName, String tier, String uuidOrName) {
+        YamlConfiguration config = load();
+        String base = "worlds." + worldName + "." + tier;
+        ConfigurationSection section = config.getConfigurationSection(base);
+        if (section == null) return null;
+
+        // Try as UUID first
+        if (section.contains(uuidOrName)) {
+            String name = section.getString(uuidOrName + ".name");
+            config.set(base + "." + uuidOrName, null);
+            save(config);
+            return name != null ? name : uuidOrName;
+        }
+
+        // Search by player name (case-insensitive)
+        String lower = uuidOrName.toLowerCase();
+        for (String key : section.getKeys(false)) {
+            String storedName = section.getString(key + ".name");
+            if (storedName != null && storedName.toLowerCase().equals(lower)) {
+                config.set(base + "." + key, null);
+                save(config);
+                return storedName;
+            }
+        }
+        return null;
+    }
+
+    /** Get all world names that have records. */
+    public java.util.Set<String> getRecordedWorldNames() {
+        YamlConfiguration config = load();
+        ConfigurationSection worlds = config.getConfigurationSection("worlds");
+        if (worlds == null) return java.util.Collections.emptySet();
+        return worlds.getKeys(false);
+    }
+
+    /**
+     * Count how many worlds a player appears in for standard/advance/expect.
+     * Returns {standard, advance, expect} counts. Does NOT include countdown.
+     */
+    public int[] countPlayerStats(String uuidOrName) {
+        int[] counts = new int[3]; // standard, advance, expect
+        YamlConfiguration config = load();
+        ConfigurationSection worlds = config.getConfigurationSection("worlds");
+        if (worlds == null) return counts;
+
+        String lower = uuidOrName.toLowerCase();
+        for (String worldName : worlds.getKeys(false)) {
+            for (int t = 0; t < 3; t++) {
+                String tier = t == 0 ? "standard" : (t == 1 ? "advance" : "expect");
+                ConfigurationSection tierSec = config.getConfigurationSection("worlds." + worldName + "." + tier);
+                if (tierSec == null) continue;
+                // Try direct UUID key match
+                if (tierSec.contains(uuidOrName)) { counts[t]++; continue; }
+                // Search by name (case-insensitive)
+                boolean found = false;
+                for (String key : tierSec.getKeys(false)) {
+                    String stored = tierSec.getString(key + ".name");
+                    if (stored != null && stored.toLowerCase().equals(lower)) {
+                        found = true; break;
+                    }
+                }
+                if (found) counts[t]++;
+            }
+        }
+        return counts;
+    }
+
+    /** Get player names for a given world+tier. */
+    public java.util.List<String> getPlayerNames(String worldName, String tier) {
+        java.util.List<String> names = new java.util.ArrayList<>();
+        YamlConfiguration config = load();
+        ConfigurationSection section = config.getConfigurationSection("worlds." + worldName + "." + tier);
+        if (section == null) return names;
+        for (String key : section.getKeys(false)) {
+            String name = section.getString(key + ".name");
+            if (name != null) names.add(name);
+        }
+        return names;
     }
 
     // ---------------------------------------------------------------
@@ -239,9 +325,11 @@ public class RecordsManager {
         public final String playerName;
         public final int score, stone, bronze, silver, gold;
         public final long timeMs;
-        CountdownRankEntry(UUID id, String name, int score, int st, int br, int si, int go, long ms) {
+        public final String endTier;
+        CountdownRankEntry(UUID id, String name, int score, int st, int br, int si, int go, long ms, String endTier) {
             this.playerId = id; this.playerName = name; this.score = score;
             this.stone = st; this.bronze = br; this.silver = si; this.gold = go; this.timeMs = ms;
+            this.endTier = endTier;
         }
     }
 }

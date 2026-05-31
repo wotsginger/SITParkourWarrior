@@ -1,5 +1,6 @@
 package club.sitmc.sitParkourWarrior.command;
 
+import club.sitmc.sitParkourWarrior.SITParkourWarrior;
 import club.sitmc.sitParkourWarrior.board.BoardData;
 import club.sitmc.sitParkourWarrior.board.BoardManager;
 import club.sitmc.sitParkourWarrior.config.CountdownScoringConfig;
@@ -64,9 +65,9 @@ public class DPCommand implements CommandExecutor, TabCompleter {
 
     private static final java.util.Set<String> ADMIN_COMMANDS = java.util.Set.of(
             "create", "edit", "exit", "particles", "sound", "pos1", "pos2",
-            "setstart", "setend", "title", "difficulty", "dynamic", "deploy",
+            "setstart", "setend", "title", "subtitle", "difficulty", "dynamic", "deploy",
             "undeploy", "save", "delete", "addforkpoint", "delforkpoint",
-            "setendtier", "reload", "pkwworld"
+            "setendtier", "reload", "pkwworld", "record"
     );
 
     @Override
@@ -101,6 +102,8 @@ public class DPCommand implements CommandExecutor, TabCompleter {
                 return handleSetEnd(sender, args);
             case "title":
                 return handleTitle(sender, args);
+            case "subtitle":
+                return handleSubtitle(sender, args);
             case "difficulty":
                 return handleDifficulty(sender, args);
             case "dynamic":
@@ -125,10 +128,14 @@ public class DPCommand implements CommandExecutor, TabCompleter {
                 return handlePkwWorld(sender, args);
             case "quit":
                 return handleQuit(sender);
+            case "stats":
+                return handleStats(sender, args);
             case "top":
                 return handleTop(sender, args);
             case "board":
                 return handleBoard(sender, args);
+            case "record":
+                return handleRecord(sender, args);
             default:
                 Msg.send(sender, "未知子命令。输入 /sitpkw 查看用法。");
                 return true;
@@ -147,6 +154,7 @@ public class DPCommand implements CommandExecutor, TabCompleter {
         Msg.send(sender, "/sitpkw setstart [pos1|pos2]  设置起点（或起点区域的角点）");
         Msg.send(sender, "/sitpkw setend [pos1|pos2]    设置终点（或终点区域的角点）");
         Msg.send(sender, "/sitpkw title <文本>  设置标题");
+        Msg.send(sender, "/sitpkw subtitle [文本]  设置关卡副标题（省略参数清空）");
         Msg.send(sender, "/sitpkw difficulty <easy|normal|hard|extreme> 设置难度");
         Msg.send(sender, "/sitpkw dynamic addstate <文件名> [间隔]  添加动态状态");
         Msg.send(sender, "/sitpkw dynamic delstate <序号|文件名>     删除动态状态");
@@ -164,10 +172,12 @@ public class DPCommand implements CommandExecutor, TabCompleter {
         Msg.send(sender, "/sitpkw pkwworld remove [世界名]                  移出 PKW 世界列表");
         Msg.send(sender, "/sitpkw pkwworld list                             列出所有 PKW 世界");
         Msg.send(sender, "/sitpkw quit                            放弃当前跑酷");
+        Msg.send(sender, "/sitpkw stats [玩家名]                  查看正计时三榜成绩计数");
         Msg.send(sender, "/sitpkw top <standard|advance|expect|countdown> [世界名]  查看排行榜");
         Msg.send(sender, "/sitpkw board add <榜名>                 创建榜牌");
         Msg.send(sender, "/sitpkw board remove                    移除附近榜牌");
         Msg.send(sender, "/sitpkw board list                      列出当前世界榜牌");
+        Msg.send(sender, "/sitpkw record delete <世界> <榜名> <玩家名或UUID>  删除一条成绩");
         Msg.send(sender, "/sitpkw reload                         重载配置");
     }
 
@@ -380,6 +390,29 @@ public class DPCommand implements CommandExecutor, TabCompleter {
         return true;
     }
 
+    private boolean handleSubtitle(CommandSender sender, String[] args) {
+        if (!(sender instanceof Player player)) {
+            Msg.send(sender, "只能由玩家执行。");
+            return true;
+        }
+        ParkourMap map = selectionManager.getEditingMap(player);
+        if (map == null) {
+            Msg.send(sender, "请先 /sitpkw create <id> 或 /sitpkw edit <id>。");
+            return true;
+        }
+        if (args.length < 2) {
+            map.setSubtitle(null);
+            mapManager.saveMap(map);
+            Msg.send(sender, "副标题已清空。");
+            return true;
+        }
+        String subtitle = String.join(" ", Arrays.copyOfRange(args, 1, args.length));
+        map.setSubtitle(subtitle);
+        mapManager.saveMap(map);
+        Msg.send(sender, "副标题已设置: " + subtitle);
+        return true;
+    }
+
     private boolean handleDifficulty(CommandSender sender, String[] args) {
         if (!(sender instanceof Player player)) {
             Msg.send(sender, "只能由玩家执行。");
@@ -437,6 +470,9 @@ public class DPCommand implements CommandExecutor, TabCompleter {
                     interval = 1;
                 }
                 data.getIntervalSequence().add(interval);
+                if (data.getStates().size() >= 2) {
+                    data.setEnabled(true);
+                }
                 mapManager.saveMap(map);
                 Msg.send(sender, "已添加状态 " + args[2] + "，间隔 " + interval + "。");
                 return true;
@@ -931,6 +967,7 @@ public class DPCommand implements CommandExecutor, TabCompleter {
         }
         boolean added = pkwWorldManager.add(worldName, mode);
         if (added) {
+            SITParkourWarrior.applyGamerulesToWorld(worldName);
             courseLayoutAnalyzer.recomputeWorld(worldName);
         }
         Msg.send(sender, added
@@ -1020,6 +1057,32 @@ public class DPCommand implements CommandExecutor, TabCompleter {
         return true;
     }
 
+    private boolean handleStats(CommandSender sender, String[] args) {
+        String targetName;
+        if (args.length >= 2) {
+            targetName = args[1];
+        } else if (sender instanceof Player player) {
+            targetName = player.getName();
+        } else {
+            Msg.send(sender, "控制台必须指定玩家名: /sitpkw stats <玩家名>");
+            return true;
+        }
+
+        // Try UUID first if online
+        String lookup = targetName;
+        org.bukkit.entity.Player online = Bukkit.getPlayer(targetName);
+        if (online != null) {
+            lookup = online.getUniqueId().toString();
+        }
+
+        int[] counts = recordsManager.countPlayerStats(lookup);
+        Msg.send(sender, "玩家 " + targetName + " 的正计时成绩:");
+        Msg.send(sender, "  标准榜(Standard): " + counts[0]);
+        Msg.send(sender, "  进阶榜(Advance): " + counts[1]);
+        Msg.send(sender, "  卓越榜(Expect): " + counts[2]);
+        return true;
+    }
+
     private boolean handleQuit(CommandSender sender) {
         if (!(sender instanceof Player player)) {
             Msg.send(sender, "只能由玩家执行。");
@@ -1067,12 +1130,11 @@ public class DPCommand implements CommandExecutor, TabCompleter {
                 Msg.send(sender, "§6--- " + worldName + " countdown 榜 ---");
                 int rank = 1;
                 for (var e : entries) {
-                    double sec = e.timeMs / 1000.0;
-                    int min = (int) (sec / 60);
-                    double s = sec % 60;
-                    String time = min > 0 ? min + ":" + String.format("%05.2f", s) : String.format("%.2f", s);
-                    Msg.send(sender, rank + ". " + e.playerName + " - " + e.score + "分 "
-                            + "（石" + e.stone + "铜" + e.bronze + "银" + e.silver + "金" + e.gold + "） " + time);
+                    String time = club.sitmc.sitParkourWarrior.board.BoardRenderer.formatTime(e.timeMs);
+                    String endTierLabel = e.endTier != null ? endTierDisplay(e.endTier) : "超时";
+                    Msg.send(sender, rank + ". " + e.playerName + " - " + e.score + "分"
+                            + " 石×" + e.stone + " 铜×" + e.bronze + " 银×" + e.silver + " 金×" + e.gold
+                            + " " + endTierLabel + " " + time);
                     rank++;
                 }
             }
@@ -1085,10 +1147,7 @@ public class DPCommand implements CommandExecutor, TabCompleter {
                 Msg.send(sender, "§6--- " + worldName + " " + tier + " 榜 ---");
                 int rank = 1;
                 for (var e : entries) {
-                    double sec = e.timeMs / 1000.0;
-                    int min = (int) (sec / 60);
-                    double s = sec % 60;
-                    String time = min > 0 ? min + ":" + String.format("%05.2f", s) : String.format("%.2f", s);
+                    String time = club.sitmc.sitParkourWarrior.board.BoardRenderer.formatTime(e.timeMs);
                     Msg.send(sender, rank + ". " + e.playerName + " - " + time + " (" + e.medals + "牌)");
                     rank++;
                 }
@@ -1166,10 +1225,52 @@ public class DPCommand implements CommandExecutor, TabCompleter {
         }
     }
 
+    private boolean handleRecord(CommandSender sender, String[] args) {
+        if (args.length < 2) {
+            Msg.send(sender, "用法: /sitpkw record delete <世界名> <榜名> <玩家名或UUID>");
+            return true;
+        }
+        if (!args[1].equalsIgnoreCase("delete")) {
+            Msg.send(sender, "用法: /sitpkw record delete <世界名> <榜名> <玩家名或UUID>");
+            return true;
+        }
+        if (args.length < 5) {
+            Msg.send(sender, "用法: /sitpkw record delete <世界名> <榜名> <玩家名或UUID>");
+            return true;
+        }
+        String worldName = args[2];
+        String tier = args[3].toLowerCase();
+        String playerId = args[4];
+
+        if (!tier.equals("standard") && !tier.equals("advance") && !tier.equals("expect") && !tier.equals("countdown")) {
+            Msg.send(sender, "无效榜名。可用: standard, advance, expect, countdown");
+            return true;
+        }
+
+        String deletedName = recordsManager.deleteRecord(worldName, tier, playerId);
+        if (deletedName != null) {
+            boardManager.notifyBoardChanged();
+            Msg.send(sender, "已删除 [" + worldName + "] [" + tier + "] 玩家 " + deletedName + " 的成绩。");
+        } else {
+            Msg.send(sender, "未找到 [" + worldName + "] [" + tier + "] 中玩家 " + playerId + " 的记录。");
+        }
+        return true;
+    }
+
+    private static String endTierDisplay(String tier) {
+        if (tier == null) return "超时";
+        switch (tier) {
+            case "easy":   return "简单";
+            case "normal": return "普通";
+            case "hard":   return "困难";
+            default:       return tier;
+        }
+    }
+
     @Override
     public List<String> onTabComplete(CommandSender sender, Command command, String alias, String[] args) {
         if (args.length == 1) {
-            var allCmds = new java.util.ArrayList<>(Arrays.asList("create", "edit", "exit", "particles", "sound", "pos1", "pos2", "setstart", "setend", "title", "difficulty", "dynamic", "deploy", "undeploy", "addforkpoint", "delforkpoint", "setendtier", "save", "delete", "pkwworld", "quit", "top", "board", "reload"));
+            var allCmds = new java.util.ArrayList<>(Arrays.asList("create", "edit", "exit", "particles", "sound", "pos1", "pos2", "setstart", "setend", "title", "difficulty", "dynamic", "deploy", "undeploy", "addforkpoint", "delforkpoint", "setendtier", "save", "delete", "pkwworld", "quit", "top", "board", "record", "stats", "reload"));
             if (!sender.hasPermission("dynamicparkour.admin")) {
                 allCmds.removeIf(ADMIN_COMMANDS::contains);
             }
@@ -1203,8 +1304,29 @@ public class DPCommand implements CommandExecutor, TabCompleter {
         if (args.length == 2 && args[0].equalsIgnoreCase("top")) {
             return filter(args[1], Arrays.asList("standard", "advance", "expect", "countdown"));
         }
+        if (args.length == 2 && args[0].equalsIgnoreCase("stats")) {
+            List<String> names = new ArrayList<>();
+            for (org.bukkit.entity.Player p : Bukkit.getOnlinePlayers()) names.add(p.getName());
+            return filter(args[1], names);
+        }
         if (args.length == 2 && args[0].equalsIgnoreCase("board")) {
             return filter(args[1], Arrays.asList("add", "remove", "list"));
+        }
+        if (args.length == 2 && args[0].equalsIgnoreCase("record")) {
+            return filter(args[1], Arrays.asList("delete"));
+        }
+        if (args.length >= 3 && args[0].equalsIgnoreCase("record")) {
+            if (args.length == 3) {
+                return filter(args[2], new ArrayList<>(recordsManager.getRecordedWorldNames()));
+            }
+            if (args.length == 4) {
+                return filter(args[3], Arrays.asList("standard", "advance", "expect", "countdown"));
+            }
+            if (args.length == 5 && args.length >= 4) {
+                String worldName = args[2];
+                String tier = args[3].toLowerCase();
+                return filter(args[4], recordsManager.getPlayerNames(worldName, tier));
+            }
         }
         if (args.length == 3 && args[0].equalsIgnoreCase("board") && args[1].equalsIgnoreCase("add")
                 && sender instanceof Player player) {

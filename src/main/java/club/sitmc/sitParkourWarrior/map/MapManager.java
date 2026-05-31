@@ -66,6 +66,7 @@ public class MapManager {
         YamlConfiguration config = new YamlConfiguration();
         config.set("id", map.getId());
         config.set("title", map.getTitle());
+        config.set("subtitle", map.getSubtitle());
         config.set("difficulty", map.getDifficulty().name().toLowerCase());
         config.set("deployed", map.isDeployed());
         config.set("effects.particles", map.isParticlesEnabled());
@@ -191,6 +192,7 @@ public class MapManager {
                 String id = config.getString("id", folder.getName().replace("_", " "));
                 ParkourMap map = new ParkourMap(id);
                 map.setTitle(config.getString("title", id));
+                map.setSubtitle(config.getString("subtitle", null));
                 map.setDifficulty(Difficulty.fromString(config.getString("difficulty", "easy")));
                 map.setDeployed(config.getBoolean("deployed", false));
                 map.setParticlesEnabled(config.getBoolean("effects.particles", true));

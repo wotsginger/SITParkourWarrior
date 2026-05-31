@@ -83,11 +83,14 @@ public class CourseLayoutAnalyzer {
 
     /**
      * Look up the FORK binding for a BRANCH_END from the in-memory cache.
-     * Returns null if no binding exists (not yet computed, or this BRANCH_END
-     * isn't bound to any fork).
+     * Triggers a recompute on cache miss.
      */
     public BranchBindingInfo getBranchBinding(String worldName, String branchEndMapId, String branchEndDepId) {
         java.util.List<BranchBindingInfo> list = branchBindingsByWorld.get(worldName);
+        if ((list == null || list.isEmpty()) && pkwWorldManager.isPkwWorld(worldName)) {
+            recomputeWorld(worldName);
+            list = branchBindingsByWorld.get(worldName);
+        }
         if (list == null) return null;
         for (BranchBindingInfo info : list) {
             if (info.branchEndMapId.equals(branchEndMapId) && info.branchEndDepId.equals(branchEndDepId)) {
@@ -647,9 +650,14 @@ public class CourseLayoutAnalyzer {
 
     /**
      * Look up a LEVEL's role from the in-memory cache.
+     * Triggers a recompute on cache miss.
      */
     public LevelRoleInfo getLevelRole(String worldName, String mapId, String deploymentId) {
         java.util.Map<String, LevelRoleInfo> worldCache = levelRoleCache.get(worldName);
+        if ((worldCache == null || worldCache.isEmpty()) && pkwWorldManager.isPkwWorld(worldName)) {
+            recomputeWorld(worldName);
+            worldCache = levelRoleCache.get(worldName);
+        }
         if (worldCache == null) return null;
         return worldCache.get(mapId + ":" + deploymentId);
     }

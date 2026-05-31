@@ -65,7 +65,7 @@ public class BoardData {
             case "standard":  return "标准榜";
             case "advance":   return "进阶榜";
             case "expect":    return "卓越榜";
-            case "countdown": return "倒计时榜";
+            case "countdown": return "得分榜";
             default:          return tier;
         }
     }

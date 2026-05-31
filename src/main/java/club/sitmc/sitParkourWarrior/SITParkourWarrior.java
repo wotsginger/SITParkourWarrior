@@ -22,13 +22,16 @@ import club.sitmc.sitParkourWarrior.map.MapManager;
 import club.sitmc.sitParkourWarrior.map.SelectionManager;
 import club.sitmc.sitParkourWarrior.records.RecordsManager;
 import club.sitmc.sitParkourWarrior.session.RunProgress;
+import club.sitmc.sitParkourWarrior.visibility.VisibilityManager;
 import club.sitmc.sitParkourWarrior.session.SessionManager;
 import club.sitmc.sitParkourWarrior.util.ItemUtil;
 import club.sitmc.sitParkourWarrior.util.ParticleService;
 import net.md_5.bungee.api.ChatMessageType;
 import net.md_5.bungee.api.chat.TextComponent;
 import org.bukkit.Bukkit;
+import org.bukkit.GameRule;
 import org.bukkit.NamespacedKey;
+import org.bukkit.World;
 import org.bukkit.plugin.java.JavaPlugin;
 import org.bukkit.scheduler.BukkitTask;
 
@@ -44,8 +47,10 @@ public final class SITParkourWarrior extends JavaPlugin {
     private RecordsManager recordsManager;
     private CountdownScoringConfig countdownScoring;
     private BoardManager boardManager;
+    private VisibilityManager visibilityManager;
     private BukkitTask actionBarTask;
     private BukkitTask boardRefreshTask;
+    private BukkitTask visibilityTask;
 
     @Override
     public void onEnable() {
@@ -60,19 +65,23 @@ public final class SITParkourWarrior extends JavaPlugin {
         this.boardManager = new BoardManager(this, getDataFolder());
         this.boardManager.init(new NamespacedKey(this, BoardManager.class.getSimpleName()));
         this.courseLayoutAnalyzer = new CourseLayoutAnalyzer(mapManager, pkwWorldManager, getDataFolder());
-        this.sessionManager = new SessionManager(this, mapManager, dynamicService, recordsManager, pkwWorldManager, courseLayoutAnalyzer, countdownScoring);
+        this.visibilityManager = new VisibilityManager(this, pkwWorldManager, sessionManager);
+        this.sessionManager = new SessionManager(this, mapManager, dynamicService, recordsManager, pkwWorldManager, courseLayoutAnalyzer, countdownScoring, visibilityManager);
         this.particleService.start(selectionManager);
         mapManager.loadAll();
         dynamicService.startAllDeployed();
+        // Delay course recompute to ensure worlds are loaded (e.g. Multiverse async load)
+        Bukkit.getScheduler().runTaskLater(this, () -> courseLayoutAnalyzer.recomputeAllPkwWorlds(), 100L);
+        applyGamerulesToAllPkwWorlds();
 
         getServer().getPluginManager().registerEvents(new PlayerMoveListener(sessionManager, mapManager, selectionManager, pkwWorldManager, courseLayoutAnalyzer), this);
-        getServer().getPluginManager().registerEvents(new PlayerQuitListener(sessionManager, pkwWorldManager, recordsManager), this);
+        getServer().getPluginManager().registerEvents(new PlayerQuitListener(sessionManager, pkwWorldManager, recordsManager, visibilityManager), this);
         getServer().getPluginManager().registerEvents(new PlayerJoinListener(sessionManager, pkwWorldManager, recordsManager), this);
         getServer().getPluginManager().registerEvents(new PlayerDeathListener(), this);
         getServer().getPluginManager().registerEvents(new PlayerRespawnListener(sessionManager), this);
         getServer().getPluginManager().registerEvents(new SelectionToolListener(selectionManager), this);
         getServer().getPluginManager().registerEvents(new ItemLockListener(pkwWorldManager), this);
-        getServer().getPluginManager().registerEvents(new WorldChangeListener(pkwWorldManager), this);
+        getServer().getPluginManager().registerEvents(new WorldChangeListener(pkwWorldManager, sessionManager, recordsManager, visibilityManager), this);
         getServer().getPluginManager().registerEvents(new PkwItemInteractListener(sessionManager, mapManager, pkwWorldManager, courseLayoutAnalyzer), this);
 
         DPCommand command = new DPCommand(mapManager, sessionManager, selectionManager, dynamicService, courseLayoutAnalyzer, pkwWorldManager, recordsManager, countdownScoring, boardManager);
@@ -86,6 +95,7 @@ public final class SITParkourWarrior extends JavaPlugin {
         startActionBarTimer();
         boardManager.restoreAllEntities();
         startBoardRefreshTask();
+        visibilityTask = Bukkit.getScheduler().runTaskTimer(this, () -> visibilityManager.scanAndUpdate(), 0L, 5L);
     }
 
     private void startActionBarTimer() {
@@ -96,31 +106,37 @@ public final class SITParkourWarrior extends JavaPlugin {
                 if (rp == null) continue;
 
                 long elapsed = rp.getElapsedMs();
-                double sec = elapsed / 1000.0;
-                String timeStr = formatTime(sec);
+                String timeStr = club.sitmc.sitParkourWarrior.board.BoardRenderer.formatTime(elapsed);
 
                 TimingMode mode = pkwWorldManager.getTimingMode(player.getWorld());
                 String msg;
                 if (mode == TimingMode.COUNTDOWN) {
                     long remaining = sessionManager.getCountdownRemainingMs(player.getUniqueId(), player.getWorld().getName());
-                    double remSec = Math.max(0, remaining) / 1000.0;
-                    msg = "§e倒计时: §f" + formatTime(remSec) + " §e奖牌: §f石" + rp.getStoneCount()
+                    String remStr = club.sitmc.sitParkourWarrior.board.BoardRenderer.formatTime(Math.max(0, remaining));
+                    msg = "§e倒计时: §f" + remStr + " §e奖牌: §f石" + rp.getStoneCount()
                             + " 铜" + rp.getBronzeCount() + " 银" + rp.getSilverCount() + " 金" + rp.getGoldCount();
                 } else {
-                    msg = "§e全程用时: §f" + timeStr;
+                    msg = "§e全程用时: §f" + timeStr + "  🥇 " + rp.getMedals();
                 }
                 player.spigot().sendMessage(ChatMessageType.ACTION_BAR, new TextComponent(msg));
             }
         }, 0L, 1L);
     }
 
-    private static String formatTime(double totalSec) {
-        int min = (int) (totalSec / 60);
-        double sec = totalSec % 60;
-        if (min > 0) {
-            return min + ":" + String.format("%05.2f", sec);
+    public static void applyGamerulesToWorld(String worldName) {
+        World world = Bukkit.getWorld(worldName);
+        if (world == null) return;
+        world.setGameRule(GameRule.FALL_DAMAGE, false);
+        world.setGameRule(GameRule.FIRE_DAMAGE, false);
+        world.setGameRule(GameRule.FREEZE_DAMAGE, false);
+        world.setGameRule(GameRule.COMMAND_BLOCK_OUTPUT, false);
+        world.setGameRule(GameRule.SEND_COMMAND_FEEDBACK, false);
+    }
+
+    private void applyGamerulesToAllPkwWorlds() {
+        for (String worldName : pkwWorldManager.getWorlds()) {
+            applyGamerulesToWorld(worldName);
         }
-        return String.format("%.2f", sec);
     }
 
     private void startBoardRefreshTask() {
@@ -194,6 +210,12 @@ public final class SITParkourWarrior extends JavaPlugin {
 
     @Override
     public void onDisable() {
+        if (visibilityTask != null) {
+            visibilityTask.cancel();
+        }
+        if (visibilityManager != null) {
+            visibilityManager.cleanupAll();
+        }
         if (boardRefreshTask != null) {
             boardRefreshTask.cancel();
         }

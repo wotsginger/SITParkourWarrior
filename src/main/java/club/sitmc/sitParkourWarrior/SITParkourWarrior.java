@@ -75,7 +75,7 @@ public final class SITParkourWarrior extends JavaPlugin {
         Bukkit.getScheduler().runTaskLater(this, () -> courseLayoutAnalyzer.recomputeAllPkwWorlds(), 100L);
         applyGamerulesToAllPkwWorlds();
 
-        getServer().getPluginManager().registerEvents(new PlayerMoveListener(sessionManager, mapManager, selectionManager, pkwWorldManager, courseLayoutAnalyzer), this);
+        getServer().getPluginManager().registerEvents(new PlayerMoveListener(sessionManager, mapManager, selectionManager, pkwWorldManager, courseLayoutAnalyzer, visibilityManager), this);
         getServer().getPluginManager().registerEvents(new PlayerQuitListener(sessionManager, pkwWorldManager, recordsManager, visibilityManager), this);
         getServer().getPluginManager().registerEvents(new PlayerJoinListener(sessionManager, pkwWorldManager, recordsManager), this);
         getServer().getPluginManager().registerEvents(new PlayerDeathListener(), this);

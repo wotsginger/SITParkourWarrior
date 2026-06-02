@@ -13,12 +13,15 @@ import club.sitmc.sitParkourWarrior.session.ParkourSession;
 import club.sitmc.sitParkourWarrior.session.SessionManager;
 import club.sitmc.sitParkourWarrior.session.SessionState;
 import club.sitmc.sitParkourWarrior.util.Msg;
+import club.sitmc.sitParkourWarrior.visibility.VisibilityManager;
+import org.bukkit.GameMode;
 import org.bukkit.Location;
 import org.bukkit.Material;
 import org.bukkit.NamespacedKey;
 import org.bukkit.entity.Player;
 import org.bukkit.event.EventHandler;
 import org.bukkit.event.Listener;
+import org.bukkit.event.player.PlayerGameModeChangeEvent;
 import org.bukkit.event.player.PlayerMoveEvent;
 import org.bukkit.persistence.PersistentDataType;
 
@@ -31,16 +34,19 @@ public class PlayerMoveListener implements Listener {
     private final SelectionManager selectionManager;
     private final PkwWorldManager pkwWorldManager;
     private final CourseLayoutAnalyzer courseLayoutAnalyzer;
+    private final VisibilityManager visibilityManager;
     private final java.util.Map<java.util.UUID, String> insideDeployment = new java.util.HashMap<>();
 
     public PlayerMoveListener(SessionManager sessionManager, MapManager mapManager,
                               SelectionManager selectionManager, PkwWorldManager pkwWorldManager,
-                              CourseLayoutAnalyzer courseLayoutAnalyzer) {
+                              CourseLayoutAnalyzer courseLayoutAnalyzer,
+                              VisibilityManager visibilityManager) {
         this.sessionManager = sessionManager;
         this.mapManager = mapManager;
         this.selectionManager = selectionManager;
         this.pkwWorldManager = pkwWorldManager;
         this.courseLayoutAnalyzer = courseLayoutAnalyzer;
+        this.visibilityManager = visibilityManager;
     }
 
     @EventHandler
@@ -71,19 +77,50 @@ public class PlayerMoveListener implements Listener {
         }
     }
 
-    // ============ Segment special-mode check ============
+    // ============ GameMode change → abandon run on switch to spectator ============
 
-    private static boolean isInSegmentSpecialMode(Player player) {
+    @EventHandler
+    public void onGameModeChange(PlayerGameModeChangeEvent event) {
+        if (event.getNewGameMode() != GameMode.SPECTATOR) return;
+
+        Player player = event.getPlayer();
+        // Abandon any active run (full-course timing) — quitRun cleans up
+        // RunProgress and removes visibility effects.
+        if (sessionManager.getRunProgress(player.getUniqueId()) != null) {
+            sessionManager.quitRun(player);
+        }
+        // Abandon any active session (per-level gameplay).
+        if (sessionManager.getSession(player.getUniqueId()) != null) {
+            sessionManager.endSession(player, false);
+        }
+        // Belt-and-suspenders: ensure no invis/glow effects remain.
+        visibilityManager.cleanupPlayer(player);
+        insideDeployment.remove(player.getUniqueId());
+    }
+
+    // ============ Unified PKW exemption check ============
+
+    /**
+     * Returns true if the player should be completely excluded from PKW logic
+     * and proximity invisibility.  Covers:
+     * - Segment special-mode PDC tag (sitsegment:special_mode)
+     * - Spectator game mode (any source: /spec, /gamemode spectator, etc.)
+     */
+    public static boolean isExemptFromPkw(Player player) {
+        // Segment special-mode PDC marker
         var key = new NamespacedKey("sitsegment", "special_mode");
         Byte v = player.getPersistentDataContainer().get(key, PersistentDataType.BYTE);
-        return v != null && v == (byte) 1;
+        if (v != null && v == (byte) 1) return true;
+        // Spectator mode
+        if (player.getGameMode() == GameMode.SPECTATOR) return true;
+        return false;
     }
 
     // ============ PKW-world full gameplay ============
 
     private void handlePkwMove(Player player, Location from, Location to) {
         // Segment special mode: quit active run and stay silent
-        if (isInSegmentSpecialMode(player)) {
+        if (isExemptFromPkw(player)) {
             ParkourSession s = sessionManager.getSession(player.getUniqueId());
             if (s != null || sessionManager.getRunProgress(player.getUniqueId()) != null) {
                 sessionManager.quitRun(player);
@@ -158,91 +195,129 @@ public class PlayerMoveListener implements Listener {
             return;
         }
 
-        // LEVEL runtime
-        Region region = deployment.getRegion();
-        boolean wasInside = session.isInsideRegion();
-        boolean inside = region != null && region.contains(to);
-        if (inside) insideDeployment.put(player.getUniqueId(), deployment.getId());
-        else insideDeployment.remove(player.getUniqueId());
+        // Per-level region / start-zone / end-zone runtime.
+        // Strictly scoped to LEVEL nodes only — GLOBAL_START / GLOBAL_END / BRANCH_END / FORK
+        // must never flow through the single-level state machine.
+        if (map.getNodeType() == NodeType.LEVEL) {
+            Region region = deployment.getRegion();
+            boolean wasInside = session.isInsideRegion();
+            boolean inside = region != null && region.contains(to);
+            if (inside) insideDeployment.put(player.getUniqueId(), deployment.getId());
+            else insideDeployment.remove(player.getUniqueId());
 
-        if (!wasInside && inside) {
-            session.setInsideStart(false);
-            session.setPendingTitleAtStart(true);
-            if (!session.isStarted() && map.getNodeType() == NodeType.LEVEL) {
-                session.startTimer(System.currentTimeMillis());
-            }
-            session.setInsideRegion(true);
-        } else if (wasInside && !inside) {
-            if (!session.isCompleted() && session.isStarted()) session.stopTimer(System.currentTimeMillis());
-            session.setInsideRegion(false);
-            session.setInsideStart(false);
-        }
-
-        boolean inStart = deployment.isInStartZone(to);
-        if (inStart && !session.isInsideStart()) {
-            if (session.isSkipResetAtStartOnce()) {
-                session.setSkipResetAtStartOnce(false);
+            if (!wasInside && inside) {
+                session.setInsideStart(false);
+                session.setPendingTitleAtStart(true);
                 if (!session.isStarted()) {
+                    session.startTimer(System.currentTimeMillis());
+                }
+                session.setInsideRegion(true);
+            } else if (wasInside && !inside) {
+                if (!session.isCompleted() && session.isStarted()) session.stopTimer(System.currentTimeMillis());
+                session.setInsideRegion(false);
+                session.setInsideStart(false);
+            }
+
+            // Start-zone trigger: edge-triggered + per-session dedup.
+            // pendingTitleAtStart is set true on region entry (session create /
+            // region re-enter) and set false here on the first start-zone hit.
+            // Once false it stays false for the lifetime of this session, so
+            // walking out of and back into the start zone cannot retrigger.
+            // Death / teleportToCheckpoint sets skipResetAtStartOnce and keeps
+            // the session intact — the timer continues and the start zone is
+            // permanently silenced for this engagement.
+            boolean inStart = deployment.isInStartZone(to);
+            if (inStart && !session.isInsideStart() && session.isPendingTitleAtStart()) {
+                if (session.isSkipResetAtStartOnce()) {
+                    session.setSkipResetAtStartOnce(false);
+                    if (!session.isStarted()) {
+                        session.startTimer(System.currentTimeMillis());
+                        player.sendTitle(map.getDifficulty().getTitleColor() + map.getTitle(),
+                                map.getSubtitle() != null ? map.getSubtitle() : "", 10, 40, 10);
+                    }
+                } else {
+                    session.resetTimer();
                     session.startTimer(System.currentTimeMillis());
                     player.sendTitle(map.getDifficulty().getTitleColor() + map.getTitle(),
                             map.getSubtitle() != null ? map.getSubtitle() : "", 10, 40, 10);
                 }
-            } else {
-                session.resetTimer();
-                session.startTimer(System.currentTimeMillis());
-                player.sendTitle(map.getDifficulty().getTitleColor() + map.getTitle(),
-                        map.getSubtitle() != null ? map.getSubtitle() : "", 10, 40, 10);
+                session.setPendingTitleAtStart(false);
+                session.setInsideStart(true);
+            } else if (!inStart && session.isInsideStart()) {
+                session.setInsideStart(false);
             }
-            session.setPendingTitleAtStart(false);
-            session.setInsideStart(true);
-        } else if (!inStart && session.isInsideStart()) {
-            session.setInsideStart(false);
-        }
 
-        if (deployment.isInEndZone(to)) {
-            sessionManager.endSession(player, true);
+            if (deployment.isInEndZone(to)) {
+                sessionManager.endSession(player, true);
+            }
         }
     }
 
     // ============ Non-PKW simple single-level state machine ============
 
     /**
-     * States: OUT (no session) / IN (session exists with insideRegion=true).
+     * Edge-triggered state machine.  The per-player {@code insideDeployment} map
+     * acts as the explicit dedup key: a player is "IN" a deployment iff the map
+     * contains an entry for that player→deployment.
      *
-     * OUT → IN:   Player enters a LEVEL's start zone → session created, timer starts.
-     * IN  → OUT:  Player reaches end zone → complete (show time, clear session).
-     * IN  → OUT:  Player leaves region via sides/top → silent exit (no message).
-     * IN  → IN:   Player falls out region bottom → teleport back to start.
+     * OUT → IN:   Player is OUT (no insideDeployment entry for this deployment)
+     *             AND steps into a LEVEL's start zone → session created, timer
+     *             starts, title shown, insideDeployment set.
+     * IN  → OUT:  Player reaches end zone → complete (show time, clear session
+     *             and insideDeployment).
+     * IN  → OUT:  Player leaves region via sides/top → silent exit (clear
+     *             session and insideDeployment).
+     * IN  → IN:   Player falls out region bottom → teleport back to start,
+     *             stays IN (session and insideDeployment preserved).
+     *
+     * The dedup rule: as long as insideDeployment still points to this
+     * deployment, re-entering the start zone is a no-op.  Once the player
+     * transitions to OUT (end zone or side/top exit), insideDeployment is
+     * cleared so the next start-zone step triggers a fresh entry.
      */
     private void handleSimpleMove(Player player, Location from, Location to) {
-        if (isInSegmentSpecialMode(player)) {
+        if (isExemptFromPkw(player)) {
             ParkourSession s = sessionManager.getSession(player.getUniqueId());
             if (s != null) sessionManager.endSession(player, false);
+            insideDeployment.remove(player.getUniqueId());
             return;
         }
 
         ParkourSession session = sessionManager.getSession(player.getUniqueId());
+        String insideId = insideDeployment.get(player.getUniqueId());
 
         // --- OUT state: try to enter a LEVEL's start zone ---
         if (session == null) {
             for (MapManager.WorldDeployment wd : mapManager.getWorldDeployments(to.getWorld().getName())) {
                 if (wd.map.getNodeType() != NodeType.LEVEL) continue;
-                if (wd.dep.isInStartZone(to)) {
-                    sessionManager.startSession(player, wd.map, wd.dep);
-                    ParkourSession s = sessionManager.getSession(player.getUniqueId());
-                    if (s != null) {
-                        s.setInsideRegion(true);
-                        s.startTimer(System.currentTimeMillis());
-                        player.sendTitle(
-                                wd.map.getDifficulty().getTitleColor() + wd.map.getTitle(),
-                                wd.map.getSubtitle() != null ? wd.map.getSubtitle() : "",
-                                10, 40, 10);
-                    }
-                    insideDeployment.put(player.getUniqueId(), wd.dep.getId());
+                if (!wd.dep.isInStartZone(to)) continue;
+
+                // Dedup: if insideDeployment still tracks this deployment,
+                // the player is logically IN — do not re-enter.
+                if (insideId != null && insideId.equals(wd.dep.getId())) {
                     return;
                 }
+
+                // Start session (startSession already starts the timer and
+                // sets insideRegion for LEVEL nodes in region).
+                if (!sessionManager.startSession(player, wd.map, wd.dep)) {
+                    return; // startSession failed (e.g. session already exists)
+                }
+                ParkourSession s = sessionManager.getSession(player.getUniqueId());
+                if (s == null) return;
+
+                // Title and dedup marker.
+                player.sendTitle(
+                        wd.map.getDifficulty().getTitleColor() + wd.map.getTitle(),
+                        wd.map.getSubtitle() != null ? wd.map.getSubtitle() : "",
+                        10, 40, 10);
+                insideDeployment.put(player.getUniqueId(), wd.dep.getId());
+                return;
             }
-            insideDeployment.remove(player.getUniqueId());
+            // No matching start zone — ensure insideDeployment is clean.
+            if (insideId != null) {
+                insideDeployment.remove(player.getUniqueId());
+            }
             return;
         }
 
@@ -261,7 +336,12 @@ public class PlayerMoveListener implements Listener {
         }
 
         Region region = deployment.getRegion();
-        if (region == null) return;
+        if (region == null) {
+            // Incomplete level — clean up to avoid soft-lock.
+            sessionManager.endSession(player, false);
+            insideDeployment.remove(player.getUniqueId());
+            return;
+        }
 
         // Track which deployment we're in
         boolean inRegion = region.contains(to);
@@ -289,10 +369,13 @@ public class PlayerMoveListener implements Listener {
             boolean inXz = bx >= region.getMinX() && bx <= region.getMaxX()
                     && bz >= region.getMinZ() && bz <= region.getMaxZ();
             if (inXz && to.getBlockY() < region.getMinY()) {
-                // Bottom fall → teleport back to start, stay IN
+                // Bottom fall → teleport back to start, stay IN.
+                // teleportToCheckpoint sets skipResetAtStartOnce and leaves
+                // the session intact, so the next onMove will see session≠null
+                // and insideDeployment still set → no re-entry, no timer reset.
                 sessionManager.teleportToCheckpoint(player);
             } else {
-                // Side/top exit → silent OUT
+                // Side/top exit → silent OUT.
                 sessionManager.endSession(player, false);
                 insideDeployment.remove(player.getUniqueId());
             }
@@ -508,14 +591,16 @@ public class PlayerMoveListener implements Listener {
 
     /**
      * Find a deployment whose entry point is near the given location.
-     * LEVEL/GLOBAL_START → start zone, FORK → each fork point.
-     * GLOBAL_END/BRANCH_END are not entry points (destinations only).
+     * LEVEL → start zone, FORK → each fork point.
+     * GLOBAL_START / GLOBAL_END / BRANCH_END are not entry points
+     * (GLOBAL_START triggers full-course timing via checkFullCourseTiming;
+     *  GLOBAL_END and BRANCH_END are destinations only).
      */
     private DeploymentMatch findDeploymentByEntryPoint(Location location) {
         if (location == null || location.getWorld() == null) return null;
         for (MapManager.WorldDeployment wd : mapManager.getWorldDeployments(location.getWorld().getName())) {
             NodeType type = wd.map.getNodeType();
-            if (type == NodeType.GLOBAL_END || type == NodeType.BRANCH_END) continue;
+            if (type == NodeType.GLOBAL_START || type == NodeType.GLOBAL_END || type == NodeType.BRANCH_END) continue;
             if (type == NodeType.FORK) {
                 List<Location> fps = CourseLinker.resolveForkBranchPoints(wd.map, wd.dep);
                 for (Location fp : fps) {

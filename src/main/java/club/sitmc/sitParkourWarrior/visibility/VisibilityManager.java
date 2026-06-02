@@ -1,6 +1,7 @@
 package club.sitmc.sitParkourWarrior.visibility;
 
 import club.sitmc.sitParkourWarrior.config.PkwWorldManager;
+import club.sitmc.sitParkourWarrior.listener.PlayerMoveListener;
 import club.sitmc.sitParkourWarrior.session.RunProgress;
 import club.sitmc.sitParkourWarrior.session.SessionManager;
 import org.bukkit.Bukkit;
@@ -43,12 +44,15 @@ public class VisibilityManager {
     public void scanAndUpdate() {
         if (sessionManager == null) return;
 
-        // Collect eligible players from active runs only (not full server scan)
+        // Collect eligible players from active runs only (not full server scan).
+        // Exempt (spectator / segment special mode) players are excluded:
+        // they neither receive nor count toward proximity invisibility.
         List<Player> eligible = new ArrayList<>();
         for (java.util.UUID id : sessionManager.getActiveRunPlayerIds()) {
             Player p = Bukkit.getPlayer(id);
             if (p == null) continue;
             if (!pkwWorldManager.isPkwWorld(p.getWorld())) continue;
+            if (PlayerMoveListener.isExemptFromPkw(p)) continue;
             eligible.add(p);
         }
 

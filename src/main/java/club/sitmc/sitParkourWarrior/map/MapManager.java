@@ -137,6 +137,11 @@ public class MapManager {
         saveLocation(config, "end_pos2", map.getEndPos2());
 
         DynamicData dynamicData = map.getDynamicData();
+        // Auto-enable when there are enough states for a rotation;
+        // catches legacy maps and non-addstate save paths (deploy, set*, etc.).
+        if (!dynamicData.isEnabled() && dynamicData.getStates().size() >= 2) {
+            dynamicData.setEnabled(true);
+        }
         ConfigurationSection dynamicSection = config.createSection("dynamic");
         dynamicSection.set("enabled", dynamicData.isEnabled());
         dynamicSection.set("interval_sequence", dynamicData.getIntervalSequence());
@@ -200,6 +205,7 @@ public class MapManager {
             return false;
         }
         maps.remove(map.getId().toLowerCase());
+        rebuildWorldIndex();
         File folder = getMapFolder(map);
         return deleteFolder(folder);
     }
@@ -275,6 +281,11 @@ public class MapManager {
                     dynamicData.getStates().addAll(dynamicSection.getStringList("states"));
                     dynamicData.getStateIds().clear();
                     dynamicData.getStateIds().addAll(dynamicSection.getIntegerList("state_ids"));
+                    // Auto-enable legacy maps that already have ≥2 states
+                    // but were saved before the dynamic.enabled default fix.
+                    if (!dynamicData.isEnabled() && dynamicData.getStates().size() >= 2) {
+                        dynamicData.setEnabled(true);
+                    }
                 }
 
                 map.clearDeployments();

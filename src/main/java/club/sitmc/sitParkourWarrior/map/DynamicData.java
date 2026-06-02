@@ -4,7 +4,7 @@ import java.util.ArrayList;
 import java.util.List;
 
 public class DynamicData {
-    private boolean enabled;
+    private boolean enabled = true;
     private final List<String> states = new ArrayList<>();
     private final List<Integer> intervalSequence = new ArrayList<>();
     private final List<Integer> stateIds = new ArrayList<>();

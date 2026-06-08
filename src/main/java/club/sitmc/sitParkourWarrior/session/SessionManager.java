@@ -289,9 +289,6 @@ public class SessionManager {
         progress.addEndTierMedals(bonus);
         int totalMedals = progress.getMedals();
 
-        Msg.send(player, "恭喜完成全程！总用时：" + timeStr
-                + "，奖牌数：" + totalMedals);
-
         // Determine eligible tiers (downward-compatible)
         java.util.List<String> eligibleTiers = new java.util.ArrayList<>();
         if (totalMedals >= 21) eligibleTiers.add("expect");
@@ -300,22 +297,24 @@ public class SessionManager {
 
         visibilityManager.cleanupPlayer(player);
         // Archive to records (COUNTUP only) — each tier independently
+        boolean isPb = false;
         if (pkwWorldManager.getTimingMode(player.getWorld()) == TimingMode.COUNTUP) {
             String worldName = player.getWorld().getName();
-            java.util.List<String> pbTiers = new java.util.ArrayList<>();
             for (String t : eligibleTiers) {
                 if (recordsManager.saveRecord(worldName, t,
                         player.getUniqueId(), player.getName(), elapsedMs, totalMedals)) {
-                    pbTiers.add(t);
+                    isPb = true;
                 }
             }
             recordsManager.clearActiveRun(worldName, player.getUniqueId());
-            String msg = "成绩归入 " + String.join("、", eligibleTiers) + " 榜";
-            if (!pbTiers.isEmpty()) {
-                msg += "（" + String.join("、", pbTiers) + " 新个人最佳！）";
-            }
-            Msg.send(player, msg);
         }
+
+        // Single merged completion message
+        String completionMsg = "已完成跑酷！总用时：" + timeStr + "，奖牌数：" + totalMedals;
+        if (isPb) {
+            completionMsg += "（新个人最佳！）";
+        }
+        Msg.send(player, completionMsg);
 
         return true;
     }

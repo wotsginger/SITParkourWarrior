@@ -195,6 +195,21 @@ public class PlayerMoveListener implements Listener {
             return;
         }
 
+        // GLOBAL_START transition: when the player walks from the global start
+        // platform into another node's entry point, end the GLOBAL_START session
+        // and auto-start the new node.
+        if (map.getNodeType() == NodeType.GLOBAL_START) {
+            DeploymentMatch match = findDeploymentByEntryPoint(to);
+            if (match != null) {
+                sessionManager.endSession(player, false);
+                sessionManager.startSession(player, match.map, match.deployment);
+                insideDeployment.put(player.getUniqueId(), match.deployment.getId());
+                return;
+            }
+            // Still in GLOBAL_START area — no further per-level processing needed.
+            return;
+        }
+
         // Per-level region / start-zone / end-zone runtime.
         // Strictly scoped to LEVEL nodes only — GLOBAL_START / GLOBAL_END / BRANCH_END / FORK
         // must never flow through the single-level state machine.
@@ -396,6 +411,11 @@ public class PlayerMoveListener implements Listener {
             if (type == NodeType.GLOBAL_START) {
                 if (wd.dep.isInStartZone(to)) {
                     sessionManager.startFullCourse(player.getUniqueId());
+                    // Create session for GLOBAL_START fallback safety net
+                    // so death-line / lava fallback teleports player back to start.
+                    if (sessionManager.getSession(player.getUniqueId()) == null) {
+                        sessionManager.startSession(player, wd.map, wd.dep);
+                    }
                     return;
                 }
             } else {

@@ -41,11 +41,10 @@ public final class BoardRenderer {
                 for (int i = 0; i < limit; i++) {
                     appendCountdownLine(sb, i + 1, all.get(i));
                 }
-                // Append viewer line
+                // Append viewer line (same format as in-list)
                 if (nearestPlayerName != null && !nearestPlayerInTop10 && nearestPlayerRank > 0) {
                     sb.append("§8----------------\n");
-                    sb.append("§e你的排名: 第").append(nearestPlayerRank).append("名  ")
-                      .append(nearestPlayerName).append("  §b").append(nearestPlayerTime).append("分\n");
+                    sb.append(nearestPlayerTime).append("\n");
                 }
             }
         } else {
@@ -60,8 +59,7 @@ public final class BoardRenderer {
                 }
                 if (nearestPlayerName != null && !nearestPlayerInTop10 && nearestPlayerRank > 0) {
                     sb.append("§8----------------\n");
-                    sb.append("§e你的排名: 第").append(nearestPlayerRank).append("名  ")
-                      .append(nearestPlayerName).append("  §b").append(nearestPlayerTime).append("\n");
+                    sb.append(nearestPlayerTime).append("\n");
                 }
             }
         }
@@ -125,8 +123,14 @@ public final class BoardRenderer {
     public static PlayerRankInfo findPlayerRankCountup(String worldName, String tier, String playerName, RecordsManager records) {
         List<RecordsManager.RankEntry> all = records.getTop(worldName, tier, Integer.MAX_VALUE);
         for (int i = 0; i < all.size(); i++) {
-            if (all.get(i).playerName.equals(playerName)) {
-                return new PlayerRankInfo(i + 1, formatTime(all.get(i).timeMs) + " (" + all.get(i).medals + "牌)");
+            RecordsManager.RankEntry e = all.get(i);
+            if (e.playerName.equals(playerName)) {
+                int rank = i + 1;
+                String line = rankMedal(rank) + String.format("%2d. ", rank)
+                        + "§f" + e.playerName
+                        + "  §b" + formatTime(e.timeMs)
+                        + "  §7(" + e.medals + "牌)";
+                return new PlayerRankInfo(rank, line);
             }
         }
         return null;
@@ -135,8 +139,16 @@ public final class BoardRenderer {
     public static PlayerRankInfo findPlayerRankCountdown(String worldName, String playerName, RecordsManager records) {
         List<RecordsManager.CountdownRankEntry> all = records.getCountdownTop(worldName, Integer.MAX_VALUE);
         for (int i = 0; i < all.size(); i++) {
-            if (all.get(i).playerName.equals(playerName)) {
-                return new PlayerRankInfo(i + 1, all.get(i).score + "分");
+            RecordsManager.CountdownRankEntry e = all.get(i);
+            if (e.playerName.equals(playerName)) {
+                int rank = i + 1;
+                String line = rankMedal(rank) + String.format("%2d. ", rank)
+                        + "§f" + e.playerName
+                        + "  §b" + e.score + "分"
+                        + "  §7石" + e.stone + " 铜" + e.bronze
+                        + " 银" + e.silver + " 金" + e.gold
+                        + "  §7" + endTierDisplay(e.endTier);
+                return new PlayerRankInfo(rank, line);
             }
         }
         return null;

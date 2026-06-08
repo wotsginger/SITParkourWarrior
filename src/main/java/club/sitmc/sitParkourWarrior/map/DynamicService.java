@@ -34,6 +34,11 @@ public class DynamicService {
     private final MapManager mapManager;
     private final Map<String, DynamicTask> activeTasks = new HashMap<>();
 
+    /** Radius (blocks) within which at least one player must be present for switching to occur. */
+    private static final double NEARBY_PLAYER_RADIUS = 32.0;
+    /** Tick interval for re-checking player presence when switching is paused. */
+    private static final long PAUSED_CHECK_INTERVAL_TICKS = 20L; // 1 second
+
     public DynamicService(SITParkourWarrior plugin, MapManager mapManager) {
         this.plugin = plugin;
         this.mapManager = mapManager;
@@ -100,6 +105,40 @@ public class DynamicService {
         return data.isEnabled() && data.getStates().size() > 1;
     }
 
+    /**
+     * Check whether any player is within {@link #NEARBY_PLAYER_RADIUS} blocks
+     * of the deployment region's center. Uses 3D Euclidean distance against
+     * the region center point.
+     * <p>
+     * This is intentionally lightweight: it iterates {@code world.getPlayers()}
+     * (bounded by online player count, typically dozens) rather than scanning
+     * all deployments per player (hundreds). No object allocation per check.
+     */
+    private boolean isAnyPlayerNearby(Deployment deployment) {
+        Region region = deployment.getRegion();
+        if (region == null) {
+            return false;
+        }
+        org.bukkit.World world = Bukkit.getWorld(region.getWorldName());
+        if (world == null) {
+            return false;
+        }
+        double centerX = (region.getMinX() + region.getMaxX()) / 2.0;
+        double centerY = (region.getMinY() + region.getMaxY()) / 2.0;
+        double centerZ = (region.getMinZ() + region.getMaxZ()) / 2.0;
+        double radiusSq = NEARBY_PLAYER_RADIUS * NEARBY_PLAYER_RADIUS;
+        for (org.bukkit.entity.Player player : world.getPlayers()) {
+            org.bukkit.Location loc = player.getLocation();
+            double dx = loc.getX() - centerX;
+            double dy = loc.getY() - centerY;
+            double dz = loc.getZ() - centerZ;
+            if (dx * dx + dy * dy + dz * dz <= radiusSq) {
+                return true;
+            }
+        }
+        return false;
+    }
+
     private class DynamicTask {
         private final ParkourMap map;
         private final Deployment deployment;
@@ -127,6 +166,13 @@ public class DynamicService {
             pendingTask = Bukkit.getScheduler().runTaskLater(plugin, () -> {
                 if (!isDynamicActive(map)) {
                     stop();
+                    return;
+                }
+                // Pause switching when no players are nearby to save CPU.
+                // The level hangs at its current state; when a player re-enters
+                // range, switching resumes from that state with no compensation.
+                if (!isAnyPlayerNearby(deployment)) {
+                    scheduleNext(PAUSED_CHECK_INTERVAL_TICKS);
                     return;
                 }
                 int duration = playOnce();

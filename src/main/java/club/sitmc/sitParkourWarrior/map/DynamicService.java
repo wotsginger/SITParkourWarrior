@@ -35,7 +35,7 @@ public class DynamicService {
     private final Map<String, DynamicTask> activeTasks = new HashMap<>();
 
     /** Radius (blocks) within which at least one player must be present for switching to occur. */
-    private static final double NEARBY_PLAYER_RADIUS = 32.0;
+    private static final double NEARBY_PLAYER_RADIUS = 48.0;
     /** Tick interval for re-checking player presence when switching is paused. */
     private static final long PAUSED_CHECK_INTERVAL_TICKS = 20L; // 1 second
 

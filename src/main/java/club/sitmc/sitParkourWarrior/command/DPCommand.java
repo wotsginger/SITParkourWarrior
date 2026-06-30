@@ -29,7 +29,9 @@ import org.bukkit.command.Command;
 import org.bukkit.command.CommandExecutor;
 import org.bukkit.command.CommandSender;
 import org.bukkit.command.TabCompleter;
+import org.bukkit.entity.Entity;
 import org.bukkit.entity.Player;
+import org.bukkit.entity.TextDisplay;
 
 import java.io.File;
 import java.util.ArrayList;
@@ -38,7 +40,8 @@ import java.util.Collections;
 import java.util.List;
 import java.util.UUID;
 
-public class DPCommand implements CommandExecutor, TabCompleter {
+public class
+DPCommand implements CommandExecutor, TabCompleter {
 
     private final MapManager mapManager;
     private final SessionManager sessionManager;
@@ -177,6 +180,7 @@ public class DPCommand implements CommandExecutor, TabCompleter {
         Msg.send(sender, "/sitpkw board add <榜名>                 创建榜牌");
         Msg.send(sender, "/sitpkw board remove                    移除附近榜牌");
         Msg.send(sender, "/sitpkw board list                      列出当前世界榜牌");
+        Msg.send(sender, "/sitpkw board cleanup [世界名]          扫描孤儿榜牌实体（需确认后删除）");
         Msg.send(sender, "/sitpkw record delete <世界> <榜名> <玩家名或UUID>  删除一条成绩");
         Msg.send(sender, "/sitpkw reload                         重载配置");
     }
@@ -1220,10 +1224,91 @@ public class DPCommand implements CommandExecutor, TabCompleter {
                 }
                 return true;
             }
+            case "cleanup":
+                return handleBoardCleanup(sender, player, args);
             default:
-                Msg.send(sender, "用法: /sitpkw board <add|remove|list>");
+                Msg.send(sender, "用法: /sitpkw board <add|remove|list|cleanup>");
                 return true;
         }
+    }
+
+    private boolean handleBoardCleanup(CommandSender sender, Player player, String[] args) {
+        // /sitpkw board cleanup [世界名]      → 扫描孤儿
+        // /sitpkw board cleanup confirm       → 确认删除
+        // /sitpkw board cleanup cancel        → 取消操作
+
+        // 如果 args[2] 是 confirm/cancel 则走对应流程；否则视为世界名（或默认当前世界）
+        boolean isConfirm = args.length >= 3 && args[2].equalsIgnoreCase("confirm");
+        boolean isCancel = args.length >= 3 && args[2].equalsIgnoreCase("cancel");
+
+        if (isConfirm) {
+            java.util.List<Entity> pending = boardManager.getPendingCleanup(player.getUniqueId());
+            if (pending == null || pending.isEmpty()) {
+                Msg.send(sender, "§c没有待处理的清理操作。请先运行 /sitpkw board cleanup [世界名]。");
+                return true;
+            }
+
+            // 转为 TextDisplay 列表
+            java.util.List<TextDisplay> toRemove = new ArrayList<>();
+            for (Entity e : pending) {
+                if (e instanceof TextDisplay && e.isValid()) {
+                    toRemove.add((TextDisplay) e);
+                }
+            }
+
+            int removed = boardManager.cleanupOrphans(toRemove);
+            boardManager.clearPendingCleanup(player.getUniqueId());
+            Msg.send(sender, "§a已清理 " + removed + " 个孤儿实体。");
+            boardManager.notifyBoardChanged();
+            return true;
+        }
+
+        if (isCancel) {
+            boardManager.clearPendingCleanup(player.getUniqueId());
+            Msg.send(sender, "§e已取消清理操作。");
+            return true;
+        }
+
+        // ===== scan: 世界名为 args[2] 或默认当前世界 =====
+        String targetWorld;
+        if (args.length >= 3) {
+            targetWorld = args[2];
+        } else {
+            targetWorld = player.getWorld().getName();
+        }
+
+        BoardManager.OrphanScanResult result = boardManager.scanOrphans(targetWorld);
+        if (result.totalPdcEntities == 0) {
+            Msg.send(sender, "世界 " + targetWorld + " 中未找到任何带本插件 PDC 标记的 TextDisplay 实体。");
+            return true;
+        }
+
+        Msg.send(sender, "§6===== 世界 " + targetWorld + " 榜牌实体扫描 =====");
+        Msg.send(sender, "  PDC 标记实体总数: " + result.totalPdcEntities);
+        Msg.send(sender, "  有效榜牌实体: " + result.validEntities);
+        Msg.send(sender, "  孤儿实体(无 boards.yml 记录): " + result.orphans.size());
+
+        if (result.orphans.isEmpty()) {
+            Msg.send(sender, "§a未发现孤儿实体，无需清理。");
+            boardManager.clearPendingCleanup(player.getUniqueId());
+            return true;
+        }
+
+        Msg.send(sender, "§e----- 孤儿实体列表 -----");
+        for (TextDisplay td : result.orphans) {
+            org.bukkit.Location loc = td.getLocation();
+            Msg.send(sender, "  §cUUID: " + td.getUniqueId()
+                    + "  坐标: (" + loc.getBlockX() + ", " + loc.getBlockY() + ", " + loc.getBlockZ() + ")");
+        }
+
+        // 存到 pending
+        boardManager.setPendingCleanup(player.getUniqueId(), result.orphans);
+
+        Msg.send(sender, "§e-----");
+        Msg.send(sender, "§6输入 /sitpkw board cleanup confirm 确认删除以上所有孤儿实体。");
+        Msg.send(sender, "§6输入 /sitpkw board cleanup cancel 取消操作。");
+        Msg.send(sender, "§7提示: 仅扫描当前已加载区块。如果孤儿可能在未加载区块，请走到相应区域后再运行扫描。");
+        return true;
     }
 
     private boolean handleRecord(CommandSender sender, String[] args) {
@@ -1311,7 +1396,7 @@ public class DPCommand implements CommandExecutor, TabCompleter {
             return filter(args[1], names);
         }
         if (args.length == 2 && args[0].equalsIgnoreCase("board")) {
-            return filter(args[1], Arrays.asList("add", "remove", "list"));
+            return filter(args[1], Arrays.asList("add", "remove", "list", "cleanup"));
         }
         if (args.length == 2 && args[0].equalsIgnoreCase("record")) {
             return filter(args[1], Arrays.asList("delete"));
@@ -1336,6 +1421,13 @@ public class DPCommand implements CommandExecutor, TabCompleter {
                 return filter(args[2], Arrays.asList("countdown"));
             }
             return filter(args[2], Arrays.asList("standard", "advance", "expect"));
+        }
+        if (args.length == 3 && args[0].equalsIgnoreCase("board") && args[1].equalsIgnoreCase("cleanup")) {
+            List<String> opts = new ArrayList<>();
+            opts.add("confirm");
+            opts.add("cancel");
+            for (org.bukkit.World w : Bukkit.getWorlds()) opts.add(w.getName());
+            return filter(args[2], opts);
         }
         if (args.length == 3 && args[0].equalsIgnoreCase("top")) {
             List<String> opts = new ArrayList<>();

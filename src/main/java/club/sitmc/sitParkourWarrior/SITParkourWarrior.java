@@ -32,8 +32,11 @@ import org.bukkit.Bukkit;
 import org.bukkit.GameRule;
 import org.bukkit.NamespacedKey;
 import org.bukkit.World;
+import org.bukkit.event.EventPriority;
 import org.bukkit.plugin.java.JavaPlugin;
 import org.bukkit.scheduler.BukkitTask;
+
+import java.util.concurrent.atomic.AtomicBoolean;
 
 public final class SITParkourWarrior extends JavaPlugin {
 
@@ -51,6 +54,8 @@ public final class SITParkourWarrior extends JavaPlugin {
     private BukkitTask actionBarTask;
     private BukkitTask boardRefreshTask;
     private BukkitTask visibilityTask;
+    private final AtomicBoolean worldInitDone = new AtomicBoolean(false);
+    private static final long FALLBACK_DELAY_TICKS = 100L;
 
     @Override
     public void onEnable() {
@@ -71,9 +76,9 @@ public final class SITParkourWarrior extends JavaPlugin {
         this.particleService.start(selectionManager);
         mapManager.loadAll();
         dynamicService.startAllDeployed();
-        // Delay course recompute to ensure worlds are loaded (e.g. Multiverse async load)
-        Bukkit.getScheduler().runTaskLater(this, () -> courseLayoutAnalyzer.recomputeAllPkwWorlds(), 100L);
-        applyGamerulesToAllPkwWorlds();
+        // 世界依赖初始化改为事件驱动 + 兜底，不在 onEnable 阶段提前执行
+        tryRegisterManagedWorldsLoadedListener();
+        scheduleWorldInitFallback();
 
         getServer().getPluginManager().registerEvents(new PlayerMoveListener(sessionManager, mapManager, selectionManager, pkwWorldManager, courseLayoutAnalyzer, visibilityManager), this);
         getServer().getPluginManager().registerEvents(new PlayerQuitListener(sessionManager, pkwWorldManager, recordsManager, visibilityManager), this);
@@ -94,7 +99,7 @@ public final class SITParkourWarrior extends JavaPlugin {
         }
 
         startActionBarTimer();
-        boardManager.restoreAllEntities();
+        // boardManager.restoreAllEntities() 移至 initWorldDependent()，等世界就绪后再还原
         startBoardRefreshTask();
         visibilityTask = Bukkit.getScheduler().runTaskTimer(this, () -> visibilityManager.scanAndUpdate(), 0L, 5L);
     }
@@ -138,6 +143,108 @@ public final class SITParkourWarrior extends JavaPlugin {
         for (String worldName : pkwWorldManager.getWorlds()) {
             applyGamerulesToWorld(worldName);
         }
+    }
+
+    // ---------------------------------------------------------------
+    // 世界依赖初始化（事件驱动 + 兜底 + 降级）
+    // ---------------------------------------------------------------
+
+    /**
+     * 尝试动态监听 Lobby 的 ManagedWorldsLoadedEvent。
+     * 不将 Lobby 作为编译依赖，通过 Class.forName 动态获取事件类。
+     */
+    private void tryRegisterManagedWorldsLoadedListener() {
+        try {
+            Class<?> eventClass = Class.forName("club.sitmc.sitParkourLobby.event.ManagedWorldsLoadedEvent");
+            getLogger().info("检测到 SITParkourLobby，将通过 ManagedWorldsLoadedEvent 等待世界加载完成。");
+
+            Bukkit.getPluginManager().registerEvent(
+                    eventClass.asSubclass(org.bukkit.event.Event.class),
+                    new org.bukkit.event.Listener() {},
+                    EventPriority.NORMAL,
+                    (org.bukkit.event.Listener listener, org.bukkit.event.Event event) -> {
+                        if (!worldInitDone.get()) {
+                            getLogger().info("收到 ManagedWorldsLoadedEvent（来源: Lobby），"
+                                    + "开始执行依赖世界的初始化...");
+                            initWorldDependent();
+                        } else {
+                            getLogger().info("[DEBUG] ManagedWorldsLoadedEvent 触发时 worldInitDone 已为 true，跳过。");
+                        }
+                    },
+                    this
+            );
+        } catch (ClassNotFoundException e) {
+            getLogger().warning("未检测到 SITParkourLobby（找不到 ManagedWorldsLoadedEvent），"
+                    + "将使用延迟检测方式初始化世界依赖。");
+        } catch (Exception e) {
+            getLogger().warning("注册 ManagedWorldsLoadedEvent 监听失败: " + e.getMessage()
+                    + "，将使用延迟检测方式初始化世界依赖。");
+        }
+    }
+
+    /**
+     * 兜底：onEnable 后延迟检查世界是否就绪，避免事件未触发导致初始化长期缺失。
+     */
+    private void scheduleWorldInitFallback() {
+        Bukkit.getScheduler().runTaskLater(this, () -> {
+            if (!worldInitDone.get()) {
+                checkAndInitWorldDependent();
+            }
+        }, FALLBACK_DELAY_TICKS);
+    }
+
+    /**
+     * 检查所有 PKW 世界是否已加载，就绪则执行依赖世界的初始化。
+     * 仅检查一次，不再重试（避免重试循环导致实体重复创建）。
+     * 若世界未就绪，记录警告，管理员需手动 /sitpkw reload。
+     */
+    private void checkAndInitWorldDependent() {
+        if (worldInitDone.get()) return;
+
+        boolean allReady = true;
+        for (String worldName : pkwWorldManager.getWorlds()) {
+            if (Bukkit.getWorld(worldName) == null) {
+                allReady = false;
+                break;
+            }
+        }
+
+        if (allReady) {
+            getLogger().info("所有 PKW 世界已就绪（来源: 兜底检测），执行依赖世界的初始化。");
+            initWorldDependent();
+        } else {
+            getLogger().warning("PKW 世界尚未全部加载，依赖世界的初始化未执行。"
+                    + " 请在世界加载完成后手动执行 /sitpkw reload。");
+            // 不再重试 —— 重试循环可能导致实体重复创建
+        }
+    }
+
+    /**
+     * 执行所有依赖世界存在的启动初始化。
+     * 使用 AtomicBoolean.compareAndSet 实现原子"检查并执行"，保证只执行一次，
+     * 即使 ManagedWorldsLoadedEvent 和兜底任务并发也不会重复。
+     */
+    private void initWorldDependent() {
+        if (!worldInitDone.compareAndSet(false, true)) {
+            getLogger().warning("[DEBUG] initWorldDependent 被重复调用，已跳过（worldInitDone=true）");
+            return;
+        }
+        getLogger().info("[DEBUG] initWorldDependent 开始执行（调用栈来源: "
+                + Thread.currentThread().getStackTrace()[2].getMethodName() + "）");
+
+        // 1. 重算所有 PKW 世界的 course.yml（关卡分类/branch绑定等）
+        courseLayoutAnalyzer.recomputeAllPkwWorlds();
+
+        // 2. 对已加载的 PKW 世界应用 gamerule
+        applyGamerulesToAllPkwWorlds();
+
+        // 3. 榜牌：清场 + 重建（BoardManager 内部完成完整清场→重建流程）
+        boardManager.restoreAllEntities();
+
+        // 4. 安全网：若仍有重复，清理之（仅 remove，绝不 create）
+        boardManager.cleanupDuplicates();
+
+        getLogger().info("[DEBUG] initWorldDependent 执行完毕。");
     }
 
     private void startBoardRefreshTask() {

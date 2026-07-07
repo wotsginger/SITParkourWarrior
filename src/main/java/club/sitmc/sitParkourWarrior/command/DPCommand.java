@@ -176,7 +176,7 @@ DPCommand implements CommandExecutor, TabCompleter {
         Msg.send(sender, "/sitpkw pkwworld list                             列出所有 PKW 世界");
         Msg.send(sender, "/sitpkw quit                            放弃当前跑酷");
         Msg.send(sender, "/sitpkw stats [玩家名]                  查看正计时三榜成绩计数");
-        Msg.send(sender, "/sitpkw top <standard|advance|expect|countdown> [世界名]  查看排行榜");
+        Msg.send(sender, "/sitpkw top <standard|advance|expect|countdown> [世界名]  查看排行榜（前3+自己）");
         Msg.send(sender, "/sitpkw board add <榜名>                 创建榜牌");
         Msg.send(sender, "/sitpkw board remove                    移除附近榜牌");
         Msg.send(sender, "/sitpkw board list                      列出当前世界榜牌");
@@ -1126,35 +1126,79 @@ DPCommand implements CommandExecutor, TabCompleter {
             return true;
         }
 
+        // 查询者自身名称（控制台则无自身成绩行）
+        String selfName = sender instanceof Player player ? player.getName() : null;
+
         if (tier.equals("countdown")) {
-            java.util.List<club.sitmc.sitParkourWarrior.records.RecordsManager.CountdownRankEntry> entries =
-                    recordsManager.getCountdownTop(worldName, 10);
-            if (entries.isEmpty()) {
-                Msg.send(sender, "countdown 榜暂无记录。");
-            } else {
+            java.util.List<club.sitmc.sitParkourWarrior.records.RecordsManager.CountdownRankEntry> all =
+                    recordsManager.getCountdownTop(worldName, Integer.MAX_VALUE);
+            if (all.isEmpty()) {
                 Msg.send(sender, "§6--- " + worldName + " countdown 榜 ---");
-                int rank = 1;
-                for (var e : entries) {
+                Msg.send(sender, "暂无记录。");
+                return true;
+            }
+            Msg.send(sender, "§6--- " + worldName + " countdown 榜 (前3) ---");
+            int topLimit = Math.min(all.size(), 3);
+            for (int i = 0; i < topLimit; i++) {
+                var e = all.get(i);
+                String time = club.sitmc.sitParkourWarrior.board.BoardRenderer.formatTime(e.timeMs);
+                String endTierLabel = e.endTier != null ? endTierDisplay(e.endTier) : "超时";
+                Msg.send(sender, (i + 1) + ". " + e.playerName + " - " + e.score + "分"
+                        + " 石×" + e.stone + " 铜×" + e.bronze + " 银×" + e.silver + " 金×" + e.gold
+                        + " " + endTierLabel + " " + time);
+            }
+            // 自身成绩（如果不在前3中，或在前3末尾也单独标出）
+            if (selfName != null) {
+                int selfRank = -1;
+                for (int i = 0; i < all.size(); i++) {
+                    if (all.get(i).playerName.equals(selfName)) {
+                        selfRank = i + 1;
+                        break;
+                    }
+                }
+                if (selfRank > 0) {
+                    Msg.send(sender, "§8----------------");
+                    var e = all.get(selfRank - 1);
                     String time = club.sitmc.sitParkourWarrior.board.BoardRenderer.formatTime(e.timeMs);
                     String endTierLabel = e.endTier != null ? endTierDisplay(e.endTier) : "超时";
-                    Msg.send(sender, rank + ". " + e.playerName + " - " + e.score + "分"
+                    Msg.send(sender, "§e" + selfRank + ". " + e.playerName + " - " + e.score + "分"
                             + " 石×" + e.stone + " 铜×" + e.bronze + " 银×" + e.silver + " 金×" + e.gold
                             + " " + endTierLabel + " " + time);
-                    rank++;
+                } else {
+                    Msg.send(sender, "§7你暂无记录。");
                 }
             }
         } else {
-            java.util.List<club.sitmc.sitParkourWarrior.records.RecordsManager.RankEntry> entries =
-                    recordsManager.getTop(worldName, tier, 10);
-            if (entries.isEmpty()) {
-                Msg.send(sender, tier + " 榜暂无记录。");
-            } else {
+            java.util.List<club.sitmc.sitParkourWarrior.records.RecordsManager.RankEntry> all =
+                    recordsManager.getTop(worldName, tier, Integer.MAX_VALUE);
+            if (all.isEmpty()) {
                 Msg.send(sender, "§6--- " + worldName + " " + tier + " 榜 ---");
-                int rank = 1;
-                for (var e : entries) {
+                Msg.send(sender, "暂无记录。");
+                return true;
+            }
+            Msg.send(sender, "§6--- " + worldName + " " + tier + " 榜 (前3) ---");
+            int topLimit = Math.min(all.size(), 3);
+            for (int i = 0; i < topLimit; i++) {
+                var e = all.get(i);
+                String time = club.sitmc.sitParkourWarrior.board.BoardRenderer.formatTime(e.timeMs);
+                Msg.send(sender, (i + 1) + ". " + e.playerName + " - " + time + " (" + e.medals + "牌)");
+            }
+            // 自身成绩
+            if (selfName != null) {
+                int selfRank = -1;
+                for (int i = 0; i < all.size(); i++) {
+                    if (all.get(i).playerName.equals(selfName)) {
+                        selfRank = i + 1;
+                        break;
+                    }
+                }
+                if (selfRank > 0) {
+                    Msg.send(sender, "§8----------------");
+                    var e = all.get(selfRank - 1);
                     String time = club.sitmc.sitParkourWarrior.board.BoardRenderer.formatTime(e.timeMs);
-                    Msg.send(sender, rank + ". " + e.playerName + " - " + time + " (" + e.medals + "牌)");
-                    rank++;
+                    Msg.send(sender, "§e" + selfRank + ". " + e.playerName + " - " + time + " (" + e.medals + "牌)");
+                } else {
+                    Msg.send(sender, "§7你暂无记录。");
                 }
             }
         }

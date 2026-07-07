@@ -76,7 +76,7 @@ public class WorldChangeListener implements Listener {
             player.getInventory().setItem(0, ItemUtil.createForkReturnItem());
         }
         if (!hasPkwItem(player, ItemUtil.KEY_QUIT)) {
-            player.getInventory().setItem(8, ItemUtil.createQuitItem());
+            player.getInventory().setItem(7, ItemUtil.createQuitItem());
         }
     }
 

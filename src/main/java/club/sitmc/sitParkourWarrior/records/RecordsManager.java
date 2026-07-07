@@ -49,6 +49,9 @@ public class RecordsManager {
         cache.set(base + ".bronze", bronze);
         cache.set(base + ".silver", silver);
         cache.set(base + ".gold", gold);
+        // 先清除旧的 claimed_levels section，再写入新的，
+        // 避免空 claimedLevels 时旧数据残留（与 Bug1 同模式的隐患）。
+        cache.set(base + ".claimed_levels", null);
         if (!claimedLevels.isEmpty()) {
             cache.createSection(base + ".claimed_levels", claimedLevels);
         }
@@ -148,7 +151,9 @@ public class RecordsManager {
             cache.set(base + ".silver", silver);
             cache.set(base + ".gold", gold);
             cache.set(base + ".time_ms", timeMs);
-            if (endTier != null) cache.set(base + ".end_tier", endTier);
+            // Bug1修复：始终显式设置 end_tier（含 null），
+            // 避免上一趟 PB 的 end_tier 残留在 records.yml 中。
+            cache.set(base + ".end_tier", endTier);
             persist();
             return true;
         }

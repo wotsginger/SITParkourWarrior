@@ -22,7 +22,7 @@ public final class BoardRenderer {
      */
     public static String build(BoardData board, RecordsManager records,
                                 String nearestPlayerName, int nearestPlayerRank,
-                                String nearestPlayerTime, boolean nearestPlayerInTop10) {
+                                String nearestPlayerTime, boolean nearestPlayerInTop3) {
         StringBuilder sb = new StringBuilder();
 
         String tierName = board.tierDisplayName();
@@ -37,12 +37,12 @@ public final class BoardRenderer {
             if (all.isEmpty()) {
                 sb.append("§7暂无记录");
             } else {
-                int limit = Math.min(all.size(), 10);
+                int limit = Math.min(all.size(), 3);
                 for (int i = 0; i < limit; i++) {
                     appendCountdownLine(sb, i + 1, all.get(i));
                 }
-                // Append viewer line (same format as in-list)
-                if (nearestPlayerName != null && !nearestPlayerInTop10 && nearestPlayerRank > 0) {
+                // Viewer's own line (always shown if not in top 3)
+                if (nearestPlayerName != null && !nearestPlayerInTop3 && nearestPlayerRank > 0) {
                     sb.append("§8----------------\n");
                     sb.append(nearestPlayerTime).append("\n");
                 }
@@ -53,11 +53,11 @@ public final class BoardRenderer {
             if (all.isEmpty()) {
                 sb.append("§7暂无记录");
             } else {
-                int limit = Math.min(all.size(), 10);
+                int limit = Math.min(all.size(), 3);
                 for (int i = 0; i < limit; i++) {
                     appendRankLine(sb, i + 1, all.get(i));
                 }
-                if (nearestPlayerName != null && !nearestPlayerInTop10 && nearestPlayerRank > 0) {
+                if (nearestPlayerName != null && !nearestPlayerInTop3 && nearestPlayerRank > 0) {
                     sb.append("§8----------------\n");
                     sb.append(nearestPlayerTime).append("\n");
                 }
@@ -114,6 +114,23 @@ public final class BoardRenderer {
             return String.format("%d:%02d:%02d.%03d", hours, minutes, seconds, millis);
         }
         return String.format("%02d:%02d.%03d", minutes, seconds, millis);
+    }
+
+    /**
+     * 低精度时间格式，用于 Action Bar 等高频刷新场景。
+     * 精度到十分之一秒（四舍五入），如 "01:02.3"。
+     */
+    public static String formatTimeTenths(long ms) {
+        long totalTenths = (ms + 50) / 100;  // 四舍五入到 0.1s
+        long tenths = totalTenths % 10;
+        long totalSec = totalTenths / 10;
+        long hours = totalSec / 3600;
+        long minutes = (totalSec % 3600) / 60;
+        long seconds = totalSec % 60;
+        if (hours > 0) {
+            return String.format("%d:%02d:%02d.%d", hours, minutes, seconds, tenths);
+        }
+        return String.format("%02d:%02d.%d", minutes, seconds, tenths);
     }
 
     /**

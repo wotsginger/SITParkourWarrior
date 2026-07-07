@@ -162,8 +162,21 @@ public class PlayerMoveListener implements Listener {
         // BRANCH_END teleport
         if (handleBranchEndTeleport(player, to)) return;
 
-        // No session: auto-start
+        // No session: auto-start or end-zone completion
         if (session == null) {
+            // Bug2修复：检测玩家是否直接处于某个 LEVEL 的终点区域内。
+            // 断线重连/切世界回来后 ParkourSession 被清除（只恢复了 RunProgress），
+            // 若玩家已在终点区域，auto-start + 立即完成，保证本趟结算不丢失。
+            for (MapManager.WorldDeployment wd : mapManager.getWorldDeployments(to.getWorld().getName())) {
+                if (wd.map.getNodeType() == NodeType.LEVEL && wd.dep.isInEndZone(to)) {
+                    if (sessionManager.startSession(player, wd.map, wd.dep)) {
+                        insideDeployment.put(player.getUniqueId(), wd.dep.getId());
+                        sessionManager.endSession(player, true);
+                    }
+                    return;
+                }
+            }
+
             DeploymentMatch match = findDeploymentByEntryPoint(to);
             if (match != null) {
                 String current = insideDeployment.get(player.getUniqueId());
@@ -247,14 +260,12 @@ public class PlayerMoveListener implements Listener {
                     session.setSkipResetAtStartOnce(false);
                     if (!session.isStarted()) {
                         session.startTimer(System.currentTimeMillis());
-                        player.sendTitle(map.getDifficulty().getTitleColor() + map.getTitle(),
-                                map.getSubtitle() != null ? map.getSubtitle() : "", 10, 40, 10);
+                        sessionManager.sendLevelTitle(player, map);
                     }
                 } else {
                     session.resetTimer();
                     session.startTimer(System.currentTimeMillis());
-                    player.sendTitle(map.getDifficulty().getTitleColor() + map.getTitle(),
-                            map.getSubtitle() != null ? map.getSubtitle() : "", 10, 40, 10);
+                    sessionManager.sendLevelTitle(player, map);
                 }
                 session.setPendingTitleAtStart(false);
                 session.setInsideStart(true);
@@ -322,10 +333,7 @@ public class PlayerMoveListener implements Listener {
                 if (s == null) return;
 
                 // Title and dedup marker.
-                player.sendTitle(
-                        wd.map.getDifficulty().getTitleColor() + wd.map.getTitle(),
-                        wd.map.getSubtitle() != null ? wd.map.getSubtitle() : "",
-                        10, 40, 10);
+                sessionManager.sendLevelTitle(player, wd.map);
                 insideDeployment.put(player.getUniqueId(), wd.dep.getId());
                 return;
             }

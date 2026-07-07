@@ -18,6 +18,8 @@ import club.sitmc.sitParkourWarrior.util.Msg;
 import org.bukkit.Bukkit;
 import club.sitmc.sitParkourWarrior.map.PointLocation;
 import org.bukkit.Location;
+import org.bukkit.Particle;
+import org.bukkit.Sound;
 import org.bukkit.World;
 import org.bukkit.entity.Player;
 import org.bukkit.util.Vector;
@@ -150,10 +152,7 @@ public class SessionManager {
             } else if (nodeType == NodeType.GLOBAL_START && deployment.isInStartZone(player.getLocation())) {
                 current.setInsideStart(false);
                 current.setPendingTitleAtStart(true);
-                player.sendTitle(
-                        map.getDifficulty().getTitleColor() + map.getTitle(),
-                        map.getSubtitle() != null ? map.getSubtitle() : "",
-                        10, 40, 10);
+                sendLevelTitle(player, map);
             }
         });
         return true;
@@ -190,6 +189,8 @@ public class SessionManager {
             } else {
                 Msg.send(player, "您已通过关卡（用时：" + timeStr + "）。");
             }
+            // Sound + particle
+            playCompletionEffects(player);
             session.setCompleted(true);
             session.setState(SessionState.AWAITING_HANDOFF);
             // Keep deathLineY unchanged (stay at completed node's region minY).
@@ -295,6 +296,9 @@ public class SessionManager {
         if (totalMedals >= 16) eligibleTiers.add("advance");
         eligibleTiers.add("standard");
 
+        // Tier display string
+        String tierDisplay = String.join("/", eligibleTiers);
+
         visibilityManager.cleanupPlayer(player);
         // Archive to records (COUNTUP only) — each tier independently
         boolean isPb = false;
@@ -309,8 +313,11 @@ public class SessionManager {
             recordsManager.clearActiveRun(worldName, player.getUniqueId());
         }
 
+        playCompletionEffects(player);
+
         // Single merged completion message
-        String completionMsg = "已完成跑酷！总用时：" + timeStr + "，奖牌数：" + totalMedals;
+        String completionMsg = "已完成跑酷！总用时：" + timeStr + "，奖牌数：" + totalMedals
+                + "（" + tierDisplay + "）";
         if (isPb) {
             completionMsg += "（新个人最佳！）";
         }
@@ -421,12 +428,15 @@ public class SessionManager {
         int totalScore = (int) Math.round((stoneScore + bronzeScore + silverScore + goldScore) * (1.0 + multiplier));
 
         long elapsedMs = rp.getElapsedMs();
-        double seconds = elapsedMs / 1000.0;
+        String timeStr = club.sitmc.sitParkourWarrior.board.BoardRenderer.formatTime(elapsedMs);
 
         String endTierLabel = endTierDisplay(endTier);
         String endMsg = endTier != null ? endTierLabel + "终点 完成！" : "时间到！";
-        Msg.send(player, endMsg + " 石×" + stone + " 铜×" + bronze + " 银×" + silver + " 金×" + gold
+        Msg.send(player, endMsg + " 用时：" + timeStr
+                + " 石×" + stone + " 铜×" + bronze + " 银×" + silver + " 金×" + gold
                 + "，总分 " + totalScore);
+
+        playCompletionEffects(player);
 
         boolean isPb = recordsManager.saveCountdownRecord(worldName,
                 player.getUniqueId(), player.getName(), totalScore,
@@ -525,6 +535,47 @@ public class SessionManager {
     public void cleanupPlayerEquipment(Player player) {
         player.getActivePotionEffects().forEach(effect -> player.removePotionEffect(effect.getType()));
         player.getInventory().setBoots(null);
+    }
+
+    private void playCompletionEffects(Player player) {
+        // 升级叮声
+        player.playSound(player.getLocation(), Sound.ENTITY_PLAYER_LEVELUP, 1.0f, 1.0f);
+        Location center = player.getLocation();
+        // 环形粒子（不详试炼刷怪笼激活粒子）
+        for (int i = 0; i < 12; i++) {
+            double angle = 2 * Math.PI * i / 12;
+            double x = Math.cos(angle) * 1.5;
+            double z = Math.sin(angle) * 1.5;
+            player.getWorld().spawnParticle(Particle.TRIAL_SPAWNER_DETECTION_OMINOUS,
+                    center.clone().add(x, 0.5, z), 1, 0, 0, 0, 0);
+        }
+        // 向上柱状粒子
+        for (int i = 0; i < 8; i++) {
+            player.getWorld().spawnParticle(Particle.TRIAL_SPAWNER_DETECTION_OMINOUS,
+                    center.clone().add(0, i * 0.4, 0), 1, 0, 0, 0, 0);
+        }
+    }
+
+    /**
+     * 发送关卡标题：将 title 移到较小的 subtitle 行显示，
+     * 原来的 subtitle 延迟 2 秒（40 tick）后出现。
+     */
+    public void sendLevelTitle(Player player, ParkourMap map) {
+        if (player == null || map == null) return;
+        String coloredTitle = map.getDifficulty().getTitleColor() + map.getTitle();
+        String sub = map.getSubtitle();
+        // 主标题置空，关卡名放在副标题行（字号更小）
+        player.sendTitle("", coloredTitle, 10, 70, 10);
+        // 进入关卡音效
+        player.playSound(player.getLocation(), Sound.ENTITY_ALLAY_AMBIENT_WITH_ITEM, 1.0f, 1.0f);
+        // 原副标题延迟 2s 出现
+        if (sub != null && !sub.isEmpty()) {
+            Bukkit.getScheduler().runTaskLater(plugin, () -> {
+                if (player.isOnline()) {
+                    player.sendTitle("", map.getDifficulty().getTitleColor() + sub, 0, 50, 10);
+                }
+            }, 40L);
+        }
     }
 
     /**

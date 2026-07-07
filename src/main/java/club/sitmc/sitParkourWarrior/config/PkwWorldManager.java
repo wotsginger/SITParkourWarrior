@@ -14,6 +14,7 @@ import java.util.Set;
 
 /**
  * Manages config.yml — PKW-world list with timing modes and countdown durations.
+ * （author/status 元数据已移交 SITParkourLobby 统一管理，本插件不再存储。）
  */
 public class PkwWorldManager {
 
@@ -37,14 +38,25 @@ public class PkwWorldManager {
         }
         YamlConfiguration config = YamlConfiguration.loadConfiguration(configFile);
 
-        // pkw-worlds: either a map (new) or a list (old compat)
+        // pkw-worlds: supports three formats (backward-compatible):
+        // 1. Legacy section format (each value is a section; only mode is read; author/status safely ignored)
+        // 2. Current plain string format (each value is "countup"/"countdown")
+        // 3. Ancient list format (a plain list of world name strings)
         ConfigurationSection worldsSection = config.getConfigurationSection("pkw-worlds");
         if (worldsSection != null) {
             for (String key : worldsSection.getKeys(false)) {
-                worldModes.put(key, TimingMode.fromString(worldsSection.getString(key)));
+                if (worldsSection.isConfigurationSection(key)) {
+                    // ---- Section format (legacy: may carry mode / author / status) ----
+                    // author/status 已移交 Lobby 管理，安全忽略；仅读取 mode
+                    ConfigurationSection worldSection = worldsSection.getConfigurationSection(key);
+                    worldModes.put(key, TimingMode.fromString(worldSection.getString("mode")));
+                } else {
+                    // ---- Plain string format: world → TimingMode ----
+                    worldModes.put(key, TimingMode.fromString(worldsSection.getString(key)));
+                }
             }
         } else {
-            // Old format: list of world names → default COUNTUP
+            // Ancient format: list of world names → default COUNTUP
             List<String> list = config.getStringList("pkw-worlds");
             for (String name : list) {
                 worldModes.put(name, TimingMode.COUNTUP);
@@ -66,11 +78,12 @@ public class PkwWorldManager {
     private void save() {
         YamlConfiguration config = new YamlConfiguration();
 
-        Map<String, String> modeMap = new LinkedHashMap<>();
+        // Write simple world→mode string format (author/status 已移交 Lobby，不再写入)
+        Map<String, Object> worldsMap = new LinkedHashMap<>();
         for (Map.Entry<String, TimingMode> e : worldModes.entrySet()) {
-            modeMap.put(e.getKey(), e.getValue().toConfigString());
+            worldsMap.put(e.getKey(), e.getValue().toConfigString());
         }
-        config.set("pkw-worlds", modeMap);
+        config.set("pkw-worlds", worldsMap);
 
         if (!durations.isEmpty()) {
             Map<String, Object> durMap = new LinkedHashMap<>();

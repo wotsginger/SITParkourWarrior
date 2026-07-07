@@ -36,6 +36,11 @@ import org.bukkit.event.EventPriority;
 import org.bukkit.plugin.java.JavaPlugin;
 import org.bukkit.scheduler.BukkitTask;
 
+import java.util.ArrayList;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.UUID;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 public final class SITParkourWarrior extends JavaPlugin {
@@ -112,13 +117,13 @@ public final class SITParkourWarrior extends JavaPlugin {
                 if (rp == null) continue;
 
                 long elapsed = rp.getElapsedMs();
-                String timeStr = club.sitmc.sitParkourWarrior.board.BoardRenderer.formatTime(elapsed);
+                String timeStr = club.sitmc.sitParkourWarrior.board.BoardRenderer.formatTimeTenths(elapsed);
 
                 TimingMode mode = pkwWorldManager.getTimingMode(player.getWorld());
                 String msg;
                 if (mode == TimingMode.COUNTDOWN) {
                     long remaining = sessionManager.getCountdownRemainingMs(player.getUniqueId(), player.getWorld().getName());
-                    String remStr = club.sitmc.sitParkourWarrior.board.BoardRenderer.formatTime(Math.max(0, remaining));
+                    String remStr = club.sitmc.sitParkourWarrior.board.BoardRenderer.formatTimeTenths(Math.max(0, remaining));
                     msg = "§e倒计时: §f" + remStr + " §e奖牌: §f石" + rp.getStoneCount()
                             + " 铜" + rp.getBronzeCount() + " 银" + rp.getSilverCount() + " 金" + rp.getGoldCount();
                 } else {
@@ -126,7 +131,7 @@ public final class SITParkourWarrior extends JavaPlugin {
                 }
                 player.spigot().sendMessage(ChatMessageType.ACTION_BAR, new TextComponent(msg));
             }
-        }, 0L, 1L);
+        }, 0L, 5L);
     }
 
     public static void applyGamerulesToWorld(String worldName) {
@@ -137,6 +142,7 @@ public final class SITParkourWarrior extends JavaPlugin {
         world.setGameRule(GameRule.FREEZE_DAMAGE, false);
         world.setGameRule(GameRule.COMMAND_BLOCK_OUTPUT, false);
         world.setGameRule(GameRule.SEND_COMMAND_FEEDBACK, false);
+        world.setGameRule(GameRule.DO_TILE_DROPS, false);
     }
 
     private void applyGamerulesToAllPkwWorlds() {
@@ -268,7 +274,7 @@ public final class SITParkourWarrior extends JavaPlugin {
             String nearestName = null;
             String nearestTime = null;
             int nearestRank = -1;
-            boolean nearestInTop10 = false;
+            boolean nearestInTop3 = false;
 
             // Find nearest player within 10 blocks
             org.bukkit.World world = Bukkit.getWorld(board.getWorldName());
@@ -289,7 +295,7 @@ public final class SITParkourWarrior extends JavaPlugin {
                         if (info != null) {
                             nearestRank = info.rank;
                             nearestTime = info.display;
-                            nearestInTop10 = info.rank <= 10;
+                            nearestInTop3 = info.rank <= 3;
                         }
                     } else {
                         BoardRenderer.PlayerRankInfo info = BoardRenderer.findPlayerRankCountup(
@@ -297,7 +303,7 @@ public final class SITParkourWarrior extends JavaPlugin {
                         if (info != null) {
                             nearestRank = info.rank;
                             nearestTime = info.display;
-                            nearestInTop10 = info.rank <= 10;
+                            nearestInTop3 = info.rank <= 3;
                         }
                     }
                 }
@@ -308,7 +314,7 @@ public final class SITParkourWarrior extends JavaPlugin {
 
             if (boardRefreshNeeded || nearestChanged) {
                 String text = BoardRenderer.build(board, recordsManager,
-                        nearestName, nearestRank, nearestTime, nearestInTop10);
+                        nearestName, nearestRank, nearestTime, nearestInTop3);
                 display.setText(text);
                 lastNearestPerBoard.put(playersInRangeKey, nearestName);
             }
@@ -339,5 +345,162 @@ public final class SITParkourWarrior extends JavaPlugin {
         if (mapManager != null) {
             mapManager.saveAll();
         }
+    }
+
+    // ---------------------------------------------------------------
+    // Public query API (for Lobby clock-menu reflection)
+    // ---------------------------------------------------------------
+
+    /**
+     * 返回所有 PKW 世界的地图列表信息。
+     * 每个世界一条记录，包含 id/name/type/world 字段。
+     * （author/status 元数据已移交 SITParkourLobby 统一管理，本方法不再返回。）
+     * 供 Lobby 钟菜单通过反射调用。
+     *
+     * @return 地图列表，异常时返回空列表
+     */
+    public List<Map<String, String>> getParkourMaps() {
+        List<Map<String, String>> result = new ArrayList<>();
+        try {
+            for (String worldName : pkwWorldManager.getWorlds()) {
+                Map<String, String> entry = new LinkedHashMap<>();
+                TimingMode mode = pkwWorldManager.getTimingMode(worldName);
+                entry.put("id", worldName);
+                entry.put("name", worldName);
+                entry.put("type", mode.toConfigString());
+                entry.put("world", worldName);
+                result.add(entry);
+            }
+        } catch (Exception ignored) {
+            // 内部容错，返回已有结果
+        }
+        return result;
+    }
+
+    /**
+     * 返回指定 PKW 世界所有榜单的前 topN 名，按榜名分组。
+     * 正计时(COUNTUP)世界返回三个键: standard / advance / expect；
+     * 倒计时(COUNTDOWN)世界返回一个键: countdown。
+     * 供 Lobby 钟菜单通过反射调用。
+     *
+     * @param mapId PKW 世界名
+     * @param topN  每个榜单返回前几名
+     * @return 按榜名分组的排行榜 Map，无记录或异常时返回空 Map
+     */
+    public Map<String, List<Map<String, String>>> getLeaderboards(String mapId, int topN) {
+        Map<String, List<Map<String, String>>> result = new LinkedHashMap<>();
+        try {
+            if (mapId == null || !pkwWorldManager.isPkwWorld(mapId)) {
+                return result;
+            }
+            if (topN <= 0) topN = 3;
+            TimingMode mode = pkwWorldManager.getTimingMode(mapId);
+            if (mode == TimingMode.COUNTDOWN) {
+                // 倒计时：仅 countdown 一个榜
+                result.put("countdown", buildCountdownLeaderboard(mapId, topN));
+            } else {
+                // 正计时：standard / advance / expect 三个榜
+                for (String tier : COUNTUP_TIERS) {
+                    result.put(tier, buildCountupLeaderboard(mapId, tier, topN));
+                }
+            }
+        } catch (Exception ignored) {
+            // 内部容错，返回已有结果
+        }
+        return result;
+    }
+
+    /**
+     * 返回指定玩家在指定 PKW 世界各榜单的名次信息，按榜名分组。
+     * 正计时(COUNTUP)世界返回三个键: standard / advance / expect；
+     * 倒计时(COUNTDOWN)世界返回一个键: countdown。
+     * 某榜无记录则该键对应 null。
+     * 供 Lobby 钟菜单通过反射调用。
+     *
+     * @param mapId    PKW 世界名
+     * @param playerId 玩家 UUID
+     * @return 按榜名分组的名次 Map，未找到或异常时返回空 Map
+     */
+    public Map<String, Map<String, String>> getPlayerRanks(String mapId, UUID playerId) {
+        Map<String, Map<String, String>> result = new LinkedHashMap<>();
+        try {
+            if (mapId == null || playerId == null || !pkwWorldManager.isPkwWorld(mapId)) {
+                return result;
+            }
+            String uuidStr = playerId.toString();
+            TimingMode mode = pkwWorldManager.getTimingMode(mapId);
+            if (mode == TimingMode.COUNTDOWN) {
+                result.put("countdown", findCountdownPlayerRank(mapId, uuidStr));
+            } else {
+                for (String tier : COUNTUP_TIERS) {
+                    result.put(tier, findCountupPlayerRank(mapId, tier, uuidStr));
+                }
+            }
+        } catch (Exception ignored) {
+            // 内部容错，返回已有结果
+        }
+        return result;
+    }
+
+    // ---- helper constants & methods for leaderboard queries ----
+
+    private static final String[] COUNTUP_TIERS = {"standard", "advance", "expect"};
+
+    private List<Map<String, String>> buildCountupLeaderboard(String worldName, String tier, int topN) {
+        List<Map<String, String>> list = new ArrayList<>();
+        List<RecordsManager.RankEntry> entries = recordsManager.getTop(worldName, tier, topN);
+        int rank = 1;
+        for (RecordsManager.RankEntry e : entries) {
+            Map<String, String> entry = new LinkedHashMap<>();
+            entry.put("rank", String.valueOf(rank++));
+            entry.put("player", e.playerName);
+            entry.put("score", BoardRenderer.formatTime(e.timeMs));
+            list.add(entry);
+        }
+        return list;
+    }
+
+    private List<Map<String, String>> buildCountdownLeaderboard(String worldName, int topN) {
+        List<Map<String, String>> list = new ArrayList<>();
+        List<RecordsManager.CountdownRankEntry> entries = recordsManager.getCountdownTop(worldName, topN);
+        int rank = 1;
+        for (RecordsManager.CountdownRankEntry e : entries) {
+            Map<String, String> entry = new LinkedHashMap<>();
+            entry.put("rank", String.valueOf(rank++));
+            entry.put("player", e.playerName);
+            entry.put("score", e.score + "分");
+            list.add(entry);
+        }
+        return list;
+    }
+
+    private Map<String, String> findCountupPlayerRank(String worldName, String tier, String uuidStr) {
+        List<RecordsManager.RankEntry> all = recordsManager.getTop(worldName, tier, Integer.MAX_VALUE);
+        for (int i = 0; i < all.size(); i++) {
+            RecordsManager.RankEntry e = all.get(i);
+            if (e.playerId.toString().equals(uuidStr)) {
+                Map<String, String> entry = new LinkedHashMap<>();
+                entry.put("rank", String.valueOf(i + 1));
+                entry.put("player", e.playerName);
+                entry.put("score", BoardRenderer.formatTime(e.timeMs));
+                return entry;
+            }
+        }
+        return null;
+    }
+
+    private Map<String, String> findCountdownPlayerRank(String worldName, String uuidStr) {
+        List<RecordsManager.CountdownRankEntry> all = recordsManager.getCountdownTop(worldName, Integer.MAX_VALUE);
+        for (int i = 0; i < all.size(); i++) {
+            RecordsManager.CountdownRankEntry e = all.get(i);
+            if (e.playerId.toString().equals(uuidStr)) {
+                Map<String, String> entry = new LinkedHashMap<>();
+                entry.put("rank", String.valueOf(i + 1));
+                entry.put("player", e.playerName);
+                entry.put("score", e.score + "分");
+                return entry;
+            }
+        }
+        return null;
     }
 }

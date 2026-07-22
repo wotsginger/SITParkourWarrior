@@ -79,6 +79,15 @@ public class ParkourSession {
         return elapsedMs;
     }
 
+    /**
+     * Directly set the accumulated elapsed time (used when restoring a saved session).
+     * Does not affect the running timer segment — callers should follow up with
+     * {@link #startTimer(long)} if the session was running when saved.
+     */
+    public void setElapsedMsDirect(long elapsedMs) {
+        this.elapsedMs = elapsedMs;
+    }
+
     public boolean isCompleted() {
         return completed;
     }

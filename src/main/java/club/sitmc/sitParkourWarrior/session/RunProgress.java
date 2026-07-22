@@ -141,30 +141,38 @@ public class RunProgress {
      * Restore state from a saved run.
      * For COUNTUP: claimedLevels values are "countup".
      * For COUNTDOWN: claimedLevels values are medal types (stone/bronze/silver/gold).
+     *
+     * @param running if true, the timer will continue from where it left off;
+     *                if false, only elapsed time and medals are restored but
+     *                the timer is NOT started (player hasn't begun global timing)
      */
     public void restoreFull(long elapsedMs, int medals, int stone, int bronze, int silver, int gold,
-                            java.util.Map<String, String> claimed) {
+                            java.util.Map<String, String> claimed, boolean running) {
         this.elapsedMs = elapsedMs;
         this.medals = medals;
         this.stoneCount = stone;
         this.bronzeCount = bronze;
         this.silverCount = silver;
         this.goldCount = gold;
-        this.segmentStart = System.currentTimeMillis();
-        this.running = true;
+        this.running = false;
+        if (running) {
+            this.segmentStart = System.currentTimeMillis();
+            this.running = true;
+        }
         this.claimedLevels.clear();
         if (claimed != null) {
             this.claimedLevels.putAll(claimed);
         }
     }
 
-    /** Backward-compat restore for COUNTUP (old format). */
+    /** Backward-compat restore for COUNTUP (old format). Always starts timer — old format
+     * only existed when the player had an active RunProgress. */
     public void restore(long elapsedMs, int medals, java.util.List<String> claimed) {
         java.util.Map<String, String> map = new LinkedHashMap<>();
         if (claimed != null) {
             for (String c : claimed) map.put(c, "countup");
         }
-        restoreFull(elapsedMs, medals, 0, 0, 0, 0, map);
+        restoreFull(elapsedMs, medals, 0, 0, 0, 0, map, true);
     }
 
     /** Set elapsed ms directly (for countdown timer restore without overwriting medals). */

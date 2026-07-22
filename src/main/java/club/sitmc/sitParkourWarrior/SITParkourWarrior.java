@@ -15,6 +15,7 @@ import club.sitmc.sitParkourWarrior.listener.PlayerJoinListener;
 import club.sitmc.sitParkourWarrior.listener.PlayerMoveListener;
 import club.sitmc.sitParkourWarrior.listener.PlayerQuitListener;
 import club.sitmc.sitParkourWarrior.listener.PlayerRespawnListener;
+import club.sitmc.sitParkourWarrior.listener.PlayerTeleportListener;
 import club.sitmc.sitParkourWarrior.listener.SelectionToolListener;
 import club.sitmc.sitParkourWarrior.listener.WorldChangeListener;
 import club.sitmc.sitParkourWarrior.map.DynamicService;
@@ -86,7 +87,7 @@ public final class SITParkourWarrior extends JavaPlugin {
         scheduleWorldInitFallback();
 
         getServer().getPluginManager().registerEvents(new PlayerMoveListener(sessionManager, mapManager, selectionManager, pkwWorldManager, courseLayoutAnalyzer, visibilityManager), this);
-        getServer().getPluginManager().registerEvents(new PlayerQuitListener(sessionManager, pkwWorldManager, recordsManager, visibilityManager), this);
+        getServer().getPluginManager().registerEvents(new PlayerQuitListener(sessionManager, pkwWorldManager, visibilityManager), this);
         getServer().getPluginManager().registerEvents(new PlayerJoinListener(sessionManager, pkwWorldManager, recordsManager), this);
         getServer().getPluginManager().registerEvents(new PlayerDeathListener(), this);
         getServer().getPluginManager().registerEvents(new PlayerRespawnListener(sessionManager), this);
@@ -94,6 +95,7 @@ public final class SITParkourWarrior extends JavaPlugin {
         getServer().getPluginManager().registerEvents(new ItemLockListener(pkwWorldManager), this);
         getServer().getPluginManager().registerEvents(new WorldChangeListener(pkwWorldManager, sessionManager, recordsManager, visibilityManager), this);
         getServer().getPluginManager().registerEvents(new PkwItemInteractListener(sessionManager, mapManager, pkwWorldManager, courseLayoutAnalyzer), this);
+        getServer().getPluginManager().registerEvents(new PlayerTeleportListener(sessionManager, pkwWorldManager, visibilityManager), this);
 
         DPCommand command = new DPCommand(mapManager, sessionManager, selectionManager, dynamicService, courseLayoutAnalyzer, pkwWorldManager, recordsManager, countdownScoring, boardManager);
         if (getCommand("sitpkw") != null) {

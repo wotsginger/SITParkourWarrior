@@ -35,8 +35,6 @@ public class PlayerMoveListener implements Listener {
     private final PkwWorldManager pkwWorldManager;
     private final CourseLayoutAnalyzer courseLayoutAnalyzer;
     private final VisibilityManager visibilityManager;
-    private final java.util.Map<java.util.UUID, String> insideDeployment = new java.util.HashMap<>();
-
     public PlayerMoveListener(SessionManager sessionManager, MapManager mapManager,
                               SelectionManager selectionManager, PkwWorldManager pkwWorldManager,
                               CourseLayoutAnalyzer courseLayoutAnalyzer,
@@ -95,7 +93,7 @@ public class PlayerMoveListener implements Listener {
         }
         // Belt-and-suspenders: ensure no invis/glow effects remain.
         visibilityManager.cleanupPlayer(player);
-        insideDeployment.remove(player.getUniqueId());
+        sessionManager.removeInsideDeployment(player.getUniqueId());
     }
 
     // ============ Unified PKW exemption check ============
@@ -170,7 +168,7 @@ public class PlayerMoveListener implements Listener {
             for (MapManager.WorldDeployment wd : mapManager.getWorldDeployments(to.getWorld().getName())) {
                 if (wd.map.getNodeType() == NodeType.LEVEL && wd.dep.isInEndZone(to)) {
                     if (sessionManager.startSession(player, wd.map, wd.dep)) {
-                        insideDeployment.put(player.getUniqueId(), wd.dep.getId());
+                        sessionManager.setInsideDeployment(player.getUniqueId(), wd.dep.getId());
                         sessionManager.endSession(player, true);
                     }
                     return;
@@ -179,13 +177,13 @@ public class PlayerMoveListener implements Listener {
 
             DeploymentMatch match = findDeploymentByEntryPoint(to);
             if (match != null) {
-                String current = insideDeployment.get(player.getUniqueId());
+                String current = sessionManager.getInsideDeployment(player.getUniqueId());
                 if (current == null || !current.equals(match.deployment.getId())) {
                     sessionManager.startSession(player, match.map, match.deployment);
                 }
-                insideDeployment.put(player.getUniqueId(), match.deployment.getId());
+                sessionManager.setInsideDeployment(player.getUniqueId(), match.deployment.getId());
             } else {
-                insideDeployment.remove(player.getUniqueId());
+                sessionManager.removeInsideDeployment(player.getUniqueId());
             }
             return;
         }
@@ -216,7 +214,7 @@ public class PlayerMoveListener implements Listener {
             if (match != null) {
                 sessionManager.endSession(player, false);
                 sessionManager.startSession(player, match.map, match.deployment);
-                insideDeployment.put(player.getUniqueId(), match.deployment.getId());
+                sessionManager.setInsideDeployment(player.getUniqueId(), match.deployment.getId());
                 return;
             }
             // Still in GLOBAL_START area — no further per-level processing needed.
@@ -230,8 +228,8 @@ public class PlayerMoveListener implements Listener {
             Region region = deployment.getRegion();
             boolean wasInside = session.isInsideRegion();
             boolean inside = region != null && region.contains(to);
-            if (inside) insideDeployment.put(player.getUniqueId(), deployment.getId());
-            else insideDeployment.remove(player.getUniqueId());
+            if (inside) sessionManager.setInsideDeployment(player.getUniqueId(), deployment.getId());
+            else sessionManager.removeInsideDeployment(player.getUniqueId());
 
             if (!wasInside && inside) {
                 session.setInsideStart(false);
@@ -305,12 +303,12 @@ public class PlayerMoveListener implements Listener {
         if (isExemptFromPkw(player)) {
             ParkourSession s = sessionManager.getSession(player.getUniqueId());
             if (s != null) sessionManager.endSession(player, false);
-            insideDeployment.remove(player.getUniqueId());
+            sessionManager.removeInsideDeployment(player.getUniqueId());
             return;
         }
 
         ParkourSession session = sessionManager.getSession(player.getUniqueId());
-        String insideId = insideDeployment.get(player.getUniqueId());
+        String insideId = sessionManager.getInsideDeployment(player.getUniqueId());
 
         // --- OUT state: try to enter a LEVEL's start zone ---
         if (session == null) {
@@ -334,12 +332,12 @@ public class PlayerMoveListener implements Listener {
 
                 // Title and dedup marker.
                 sessionManager.sendLevelTitle(player, wd.map);
-                insideDeployment.put(player.getUniqueId(), wd.dep.getId());
+                sessionManager.setInsideDeployment(player.getUniqueId(), wd.dep.getId());
                 return;
             }
             // No matching start zone — ensure insideDeployment is clean.
             if (insideId != null) {
-                insideDeployment.remove(player.getUniqueId());
+                sessionManager.removeInsideDeployment(player.getUniqueId());
             }
             return;
         }
@@ -348,13 +346,13 @@ public class PlayerMoveListener implements Listener {
         ParkourMap map = mapManager.getMap(session.getMapId());
         if (map == null || map.getNodeType() != NodeType.LEVEL) {
             sessionManager.endSession(player, false);
-            insideDeployment.remove(player.getUniqueId());
+            sessionManager.removeInsideDeployment(player.getUniqueId());
             return;
         }
         Deployment deployment = map.getDeployment(session.getDeploymentId());
         if (deployment == null) {
             sessionManager.endSession(player, false);
-            insideDeployment.remove(player.getUniqueId());
+            sessionManager.removeInsideDeployment(player.getUniqueId());
             return;
         }
 
@@ -362,16 +360,16 @@ public class PlayerMoveListener implements Listener {
         if (region == null) {
             // Incomplete level — clean up to avoid soft-lock.
             sessionManager.endSession(player, false);
-            insideDeployment.remove(player.getUniqueId());
+            sessionManager.removeInsideDeployment(player.getUniqueId());
             return;
         }
 
         // Track which deployment we're in
         boolean inRegion = region.contains(to);
         if (inRegion) {
-            insideDeployment.put(player.getUniqueId(), deployment.getId());
+            sessionManager.setInsideDeployment(player.getUniqueId(), deployment.getId());
         } else {
-            insideDeployment.remove(player.getUniqueId());
+            sessionManager.removeInsideDeployment(player.getUniqueId());
         }
 
         // --- IN → OUT: reach end zone (complete) ---
@@ -382,7 +380,7 @@ public class PlayerMoveListener implements Listener {
             String coloredTitle = map.getDifficulty().getTitleColor() + map.getTitle();
             Msg.send(player, "您已通过 " + coloredTitle + "（用时：" + timeStr + "）。");
             sessionManager.endSession(player, false);
-            insideDeployment.remove(player.getUniqueId());
+            sessionManager.removeInsideDeployment(player.getUniqueId());
             return;
         }
 
@@ -400,7 +398,7 @@ public class PlayerMoveListener implements Listener {
             } else {
                 // Side/top exit → silent OUT.
                 sessionManager.endSession(player, false);
-                insideDeployment.remove(player.getUniqueId());
+                sessionManager.removeInsideDeployment(player.getUniqueId());
             }
         }
     }
@@ -516,7 +514,7 @@ public class PlayerMoveListener implements Listener {
             for (Location ep : entryPoints) {
                 if (isNear(to, ep)) {
                     if (session.getState() == SessionState.RUNNING) {
-                        insideDeployment.remove(player.getUniqueId());
+                        sessionManager.removeInsideDeployment(player.getUniqueId());
                     }
                     sessionManager.handoffToNextDeployment(player, session, wd.map, wd.dep, ep);
                     return true;

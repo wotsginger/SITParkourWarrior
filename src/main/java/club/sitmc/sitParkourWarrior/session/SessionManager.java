@@ -25,8 +25,10 @@ import org.bukkit.entity.Player;
 import org.bukkit.util.Vector;
 
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.UUID;
 
 public class SessionManager {
@@ -40,6 +42,12 @@ public class SessionManager {
     private VisibilityManager visibilityManager;
     private final Map<UUID, ParkourSession> sessions = new HashMap<>();
     private final Map<UUID, RunProgress> runProgresses = new HashMap<>();
+    /** Tracks which deployment a player is currently inside (for auto-start dedup). */
+    private final Map<UUID, String> insideDeployments = new HashMap<>();
+    /** Tracks player UUIDs currently undergoing an internal (plugin-initiated) teleport.
+     * Used by PlayerTeleportListener to distinguish internal course mechanics from
+     * external teleports that should trigger a leave-save. */
+    private final Set<UUID> internalTeleports = new HashSet<>();
 
     public SessionManager(SITParkourWarrior plugin, MapManager mapManager, DynamicService dynamicService,
                           RecordsManager recordsManager, PkwWorldManager pkwWorldManager,
@@ -208,6 +216,7 @@ public class SessionManager {
 
         // Non-completion: fully remove session.
         ParkourSession session = sessions.remove(player.getUniqueId());
+        insideDeployments.remove(player.getUniqueId());
         if (session == null) {
             return;
         }
@@ -237,6 +246,20 @@ public class SessionManager {
 
     public void restoreRunProgress(UUID playerId, RunProgress rp) {
         runProgresses.put(playerId, rp);
+    }
+
+    // ---- Inside-deployment tracking (for auto-start dedup) ----
+
+    public String getInsideDeployment(UUID playerId) {
+        return insideDeployments.get(playerId);
+    }
+
+    public void setInsideDeployment(UUID playerId, String deploymentId) {
+        insideDeployments.put(playerId, deploymentId);
+    }
+
+    public void removeInsideDeployment(UUID playerId) {
+        insideDeployments.remove(playerId);
     }
 
     public java.util.Set<java.util.UUID> getActiveRunPlayerIds() {
@@ -450,6 +473,172 @@ public class SessionManager {
 
     // ---- Session lifecycle ----
 
+    /**
+     * Save the active run (RunProgress + ParkourSession snapshot) to records
+     * and clean up in-memory state. Called when a player quits, changes world
+     * away from PKW, or is externally teleported away.
+     * <p>
+     * After this call, both RunProgress and ParkourSession are removed from memory.
+     * The session snapshot is persisted so it can be restored on rejoin.
+     */
+    public void saveAndClearActiveRun(Player player) {
+        String worldName = player.getWorld().getName();
+        RunProgress rp = runProgresses.get(player.getUniqueId());
+        ParkourSession session = sessions.get(player.getUniqueId());
+
+        if (rp != null || session != null) {
+            long rpElapsed = 0;
+            int rpMedals = 0;
+            int stone = 0, bronze = 0, silver = 0, gold = 0;
+            java.util.Map<String, String> claimed = java.util.Collections.emptyMap();
+
+            if (rp != null) {
+                rp.pause();
+                rpElapsed = rp.getElapsedMs();
+                rpMedals = rp.getMedals();
+                stone = rp.getStoneCount();
+                bronze = rp.getBronzeCount();
+                silver = rp.getSilverCount();
+                gold = rp.getGoldCount();
+                claimed = rp.getClaimedLevelsWithTypes();
+            }
+
+            // Extract session snapshot
+            String sessMapId = null, sessDepId = null;
+            long sessElapsed = 0;
+            boolean sessStarted = false, sessCompleted = false, sessInsideRegion = false;
+            String sessState = null;
+            double sessDeathLineY = 0;
+            String cpWorld = null;
+            double cpX = 0, cpY = 0, cpZ = 0;
+            float cpYaw = 0, cpPitch = 0;
+            String visitedForkSerial = null, forkFallbackSerial = null;
+
+            if (session != null) {
+                sessMapId = session.getMapId();
+                sessDepId = session.getDeploymentId();
+                sessElapsed = session.getElapsedMs(System.currentTimeMillis());
+                sessStarted = session.isStarted();
+                sessCompleted = session.isCompleted();
+                sessInsideRegion = session.isInsideRegion();
+                sessState = session.getState().name();
+                sessDeathLineY = session.getDeathLineY();
+                org.bukkit.Location cp = session.getCheckpoint();
+                if (cp != null && cp.getWorld() != null) {
+                    cpWorld = cp.getWorld().getName();
+                    cpX = cp.getX(); cpY = cp.getY(); cpZ = cp.getZ();
+                    cpYaw = cp.getYaw(); cpPitch = cp.getPitch();
+                }
+                visitedForkSerial = club.sitmc.sitParkourWarrior.records.RecordsManager.serializeLocationList(
+                        session.getVisitedForkPoints());
+                forkFallbackSerial = club.sitmc.sitParkourWarrior.records.RecordsManager.serializeLocation(
+                        session.getInitialForkFallback());
+            }
+
+            org.bukkit.Location loc = player.getLocation();
+            recordsManager.saveActiveRunFull(worldName,
+                    player.getUniqueId(), player.getName(),
+                    rpElapsed, rpMedals, stone, bronze, silver, gold, claimed,
+                    loc.getWorld().getName(), loc.getX(), loc.getY(), loc.getZ(),
+                    loc.getYaw(), loc.getPitch(),
+                    sessMapId, sessDepId, sessElapsed, sessStarted,
+                    sessCompleted, sessInsideRegion, sessState, sessDeathLineY,
+                    cpWorld, cpX, cpY, cpZ, cpYaw, cpPitch,
+                    visitedForkSerial, forkFallbackSerial,
+                    rp != null);
+
+            if (rp != null) {
+                runProgresses.remove(player.getUniqueId());
+            }
+            insideDeployments.remove(player.getUniqueId());
+        }
+
+        if (session != null) {
+            endSession(player, false);
+        }
+    }
+
+    /**
+     * Restore a ParkourSession from saved run data after reconnect / world change.
+     * Reconstructs the in-memory ParkourSession and returns the deployment ID
+     * for insideDeployment tracking.
+     *
+     * @return the deployment ID if the session was inside its region, or null
+     */
+    public String restoreSessionFromSaved(Player player, club.sitmc.sitParkourWarrior.records.RecordsManager.SavedRunData saved) {
+        if (!saved.hasSessionState()) return null;
+
+        ParkourSession restored = new ParkourSession(
+                player.getUniqueId(), saved.sessionMapId, saved.sessionDeploymentId,
+                System.currentTimeMillis());
+
+        restored.setElapsedMsDirect(saved.sessionElapsedMs);
+        if (saved.sessionStarted) {
+            restored.startTimer(System.currentTimeMillis());
+        }
+        restored.setCompleted(saved.sessionCompleted);
+        restored.setInsideRegion(saved.sessionInsideRegion);
+        restored.setDeathLineY(saved.sessionDeathLineY);
+
+        if (saved.sessionState != null && !saved.sessionState.isEmpty()) {
+            try {
+                restored.setState(SessionState.valueOf(saved.sessionState));
+            } catch (IllegalArgumentException ignored) {
+                restored.setState(SessionState.RUNNING);
+            }
+        }
+
+        // Restore checkpoint
+        if (saved.hasCheckpoint()) {
+            org.bukkit.World w = org.bukkit.Bukkit.getWorld(saved.checkpointWorld);
+            if (w != null) {
+                restored.setCheckpoint(new org.bukkit.Location(w,
+                        saved.checkpointX, saved.checkpointY, saved.checkpointZ,
+                        saved.checkpointYaw, saved.checkpointPitch));
+            }
+        } else {
+            // Fallback: resolve checkpoint from map deployment config
+            ParkourMap map = mapManager.getMap(saved.sessionMapId);
+            Deployment dep = getDeployment(map, saved.sessionDeploymentId);
+            if (map != null && dep != null) {
+                org.bukkit.Location cp = resolveLocationWorld(dep.getStart(), dep.getRegion());
+                if (cp != null) {
+                    restored.setCheckpoint(cp.clone());
+                }
+            }
+        }
+
+        // Restore FORK state
+        if (saved.visitedForkPointsSerial != null) {
+            java.util.List<org.bukkit.Location> visited = club.sitmc.sitParkourWarrior.records.RecordsManager
+                    .deserializeLocationList(saved.visitedForkPointsSerial);
+            restored.getVisitedForkPoints().addAll(visited);
+        }
+        if (saved.initialForkFallbackSerial != null) {
+            org.bukkit.Location fallback = club.sitmc.sitParkourWarrior.records.RecordsManager
+                    .deserializeLocation(saved.initialForkFallbackSerial);
+            restored.setInitialForkFallback(fallback);
+        }
+
+        // Restore dynamic tracking
+        ParkourMap map = mapManager.getMap(saved.sessionMapId);
+        Deployment dep = getDeployment(map, saved.sessionDeploymentId);
+        if (map != null && dep != null) {
+            dynamicService.onPlayerJoin(map, dep);
+        }
+
+        sessions.put(player.getUniqueId(), restored);
+
+        // Restore inside-deployment tracking
+        if (saved.sessionInsideRegion) {
+            insideDeployments.put(player.getUniqueId(), saved.sessionDeploymentId);
+        }
+
+        return saved.sessionInsideRegion ? saved.sessionDeploymentId : null;
+    }
+
+    // ---- Original session lifecycle methods ----
+
     public void endSessionsForMap(String mapId) {
         if (mapId == null) {
             return;
@@ -462,6 +651,7 @@ public class SessionManager {
                     endSession(player, false);
                 } else {
                     sessions.remove(playerId);
+                    insideDeployments.remove(playerId);
                 }
             }
         }
@@ -480,6 +670,7 @@ public class SessionManager {
                     endSession(player, false);
                 } else {
                     sessions.remove(playerId);
+                    insideDeployments.remove(playerId);
                 }
             }
         }
@@ -501,6 +692,7 @@ public class SessionManager {
             }
         }
         runProgresses.clear();
+        insideDeployments.clear();
     }
 
     public void teleportToStart(Player player) {
@@ -529,7 +721,32 @@ public class SessionManager {
         cleanupPlayerEquipment(player);
         player.setFallDistance(0f);
         player.setVelocity(new Vector(0, 0, 0));
-        player.teleport(start);
+        internalTeleports.add(player.getUniqueId());
+        try {
+            player.teleport(start);
+        } finally {
+            internalTeleports.remove(player.getUniqueId());
+        }
+    }
+
+    /** Returns true if the given player is currently undergoing a plugin-internal teleport.
+     * Internal teleports (death respawn, checkpoint, handoff, fork fallback, etc.) should
+     * NOT trigger leave-save logic in PlayerTeleportListener. */
+    public boolean isInternalTeleport(UUID playerId) {
+        return internalTeleports.contains(playerId);
+    }
+
+    /** Mark the start of a plugin-internal teleport. Call before {@code player.teleport()}
+     * for any plugin-initiated teleport that should not trigger leave-save logic.
+     * Always pair with {@link #endInternalTeleport} in a {@code try/finally} block. */
+    public void beginInternalTeleport(UUID playerId) {
+        internalTeleports.add(playerId);
+    }
+
+    /** Mark the end of a plugin-internal teleport. Call in a {@code finally} block
+     * after the teleport completes. */
+    public void endInternalTeleport(UUID playerId) {
+        internalTeleports.remove(playerId);
     }
 
     public void cleanupPlayerEquipment(Player player) {

@@ -40,9 +40,37 @@ public class RecordsManager {
 
     public void saveActiveRunFull(String worldName, UUID playerId, String playerName,
                                   long elapsedMs, int medals, int stone, int bronze, int silver, int gold,
-                                  Map<String, String> claimedLevels) {
+                                  Map<String, String> claimedLevels,
+                                  String locWorldName, double locX, double locY, double locZ,
+                                  float locYaw, float locPitch) {
+        saveActiveRunFull(worldName, playerId, playerName,
+                elapsedMs, medals, stone, bronze, silver, gold, claimedLevels,
+                locWorldName, locX, locY, locZ, locYaw, locPitch,
+                null, null, 0, false, false, false, null, 0,
+                null, 0, 0, 0, 0, 0, null, null,
+                true); // old callers always had a RunProgress
+    }
+
+    /**
+     * Save active run with full session snapshot for disconnect/reconnect resume.
+     * Session fields are optional — pass null/empty/defaults to skip session save.
+     */
+    public void saveActiveRunFull(String worldName, UUID playerId, String playerName,
+                                  long elapsedMs, int medals, int stone, int bronze, int silver, int gold,
+                                  Map<String, String> claimedLevels,
+                                  String locWorldName, double locX, double locY, double locZ,
+                                  float locYaw, float locPitch,
+                                  String sessionMapId, String sessionDeploymentId,
+                                  long sessionElapsedMs, boolean sessionStarted,
+                                  boolean sessionCompleted, boolean sessionInsideRegion,
+                                  String sessionState, double sessionDeathLineY,
+                                  String checkpointWorld, double checkpointX, double checkpointY, double checkpointZ,
+                                  float checkpointYaw, float checkpointPitch,
+                                  String visitedForkPointsSerial, String initialForkFallbackSerial,
+                                  boolean hasRunProgress) {
         String base = "worlds." + worldName + ".active." + playerId.toString();
         cache.set(base + ".name", playerName);
+        cache.set(base + ".has_run", hasRunProgress);
         cache.set(base + ".elapsed_ms", elapsedMs);
         cache.set(base + ".medals", medals);
         cache.set(base + ".stone", stone);
@@ -55,6 +83,57 @@ public class RecordsManager {
         if (!claimedLevels.isEmpty()) {
             cache.createSection(base + ".claimed_levels", claimedLevels);
         }
+        // 玩家离开时的精确坐标（用于恢复时传送回离开位置）
+        if (locWorldName != null && !locWorldName.isEmpty()) {
+            cache.set(base + ".loc_world", locWorldName);
+            cache.set(base + ".loc_x", locX);
+            cache.set(base + ".loc_y", locY);
+            cache.set(base + ".loc_z", locZ);
+            cache.set(base + ".loc_yaw", (double) locYaw);
+            cache.set(base + ".loc_pitch", (double) locPitch);
+        } else {
+            // 清除旧的位置数据（如果之前保存过但这次没有有效位置）
+            cache.set(base + ".loc_world", null);
+        }
+
+        // ---- Per-level session snapshot ----
+        String sessBase = base + ".session";
+        if (sessionMapId != null && sessionDeploymentId != null) {
+            cache.set(sessBase + ".map_id", sessionMapId);
+            cache.set(sessBase + ".deployment_id", sessionDeploymentId);
+            cache.set(sessBase + ".elapsed_ms", sessionElapsedMs);
+            cache.set(sessBase + ".started", sessionStarted);
+            cache.set(sessBase + ".completed", sessionCompleted);
+            cache.set(sessBase + ".inside_region", sessionInsideRegion);
+            if (sessionState != null) {
+                cache.set(sessBase + ".state", sessionState);
+            }
+            cache.set(sessBase + ".death_line_y", sessionDeathLineY);
+            if (checkpointWorld != null && !checkpointWorld.isEmpty()) {
+                cache.set(sessBase + ".cp_world", checkpointWorld);
+                cache.set(sessBase + ".cp_x", checkpointX);
+                cache.set(sessBase + ".cp_y", checkpointY);
+                cache.set(sessBase + ".cp_z", checkpointZ);
+                cache.set(sessBase + ".cp_yaw", (double) checkpointYaw);
+                cache.set(sessBase + ".cp_pitch", (double) checkpointPitch);
+            } else {
+                cache.set(sessBase + ".cp_world", null);
+            }
+            if (visitedForkPointsSerial != null && !visitedForkPointsSerial.isEmpty()) {
+                cache.set(sessBase + ".visited_fork_points", visitedForkPointsSerial);
+            } else {
+                cache.set(sessBase + ".visited_fork_points", null);
+            }
+            if (initialForkFallbackSerial != null && !initialForkFallbackSerial.isEmpty()) {
+                cache.set(sessBase + ".initial_fork_fallback", initialForkFallbackSerial);
+            } else {
+                cache.set(sessBase + ".initial_fork_fallback", null);
+            }
+        } else {
+            // Clear any stale session data
+            cache.set(sessBase, null);
+        }
+
         persist();
     }
 
@@ -64,6 +143,7 @@ public class RecordsManager {
         if (!cache.contains(base)) return null;
 
         String name = cache.getString(base + ".name");
+        boolean hasRunProgress = cache.getBoolean(base + ".has_run", true); // default true for old-format data
         long elapsedMs = cache.getLong(base + ".elapsed_ms");
         int medals = cache.getInt(base + ".medals");
         int stone = cache.getInt(base + ".stone");
@@ -82,14 +162,120 @@ public class RecordsManager {
             for (String key : oldList) claimed.put(key, "countup");
         }
 
+        // 读取离开坐标（可能为 null，表示旧版本数据没有位置信息）
+        String locWorldName = cache.getString(base + ".loc_world");
+        double locX = 0, locY = 0, locZ = 0;
+        float locYaw = 0, locPitch = 0;
+        if (locWorldName != null && !locWorldName.isEmpty()) {
+            locX = cache.getDouble(base + ".loc_x");
+            locY = cache.getDouble(base + ".loc_y");
+            locZ = cache.getDouble(base + ".loc_z");
+            locYaw = (float) cache.getDouble(base + ".loc_yaw");
+            locPitch = (float) cache.getDouble(base + ".loc_pitch");
+        }
+
+        // 读取关内状态快照（旧版本数据无此节点 → 所有字段回退到 null/default）
+        String sessBase = base + ".session";
+        String sessionMapId = cache.getString(sessBase + ".map_id");
+        String sessionDeploymentId = cache.getString(sessBase + ".deployment_id");
+        long sessionElapsedMs = cache.getLong(sessBase + ".elapsed_ms");
+        boolean sessionStarted = cache.getBoolean(sessBase + ".started");
+        boolean sessionCompleted = cache.getBoolean(sessBase + ".completed");
+        boolean sessionInsideRegion = cache.getBoolean(sessBase + ".inside_region");
+        String sessionState = cache.getString(sessBase + ".state");
+        double sessionDeathLineY = cache.getDouble(sessBase + ".death_line_y");
+        String checkpointWorld = cache.getString(sessBase + ".cp_world");
+        double checkpointX = 0, checkpointY = 0, checkpointZ = 0;
+        float checkpointYaw = 0, checkpointPitch = 0;
+        if (checkpointWorld != null && !checkpointWorld.isEmpty()) {
+            checkpointX = cache.getDouble(sessBase + ".cp_x");
+            checkpointY = cache.getDouble(sessBase + ".cp_y");
+            checkpointZ = cache.getDouble(sessBase + ".cp_z");
+            checkpointYaw = (float) cache.getDouble(sessBase + ".cp_yaw");
+            checkpointPitch = (float) cache.getDouble(sessBase + ".cp_pitch");
+        }
+        String visitedForkPointsSerial = cache.getString(sessBase + ".visited_fork_points");
+        String initialForkFallbackSerial = cache.getString(sessBase + ".initial_fork_fallback");
+
         cache.set(base, null);
         persist();
-        return new SavedRunData(name, elapsedMs, medals, stone, bronze, silver, gold, claimed);
+        return new SavedRunData(name, elapsedMs, medals, stone, bronze, silver, gold, claimed,
+                locWorldName, locX, locY, locZ, locYaw, locPitch,
+                sessionMapId, sessionDeploymentId,
+                sessionElapsedMs, sessionStarted,
+                sessionCompleted, sessionInsideRegion,
+                sessionState, sessionDeathLineY,
+                checkpointWorld, checkpointX, checkpointY, checkpointZ,
+                checkpointYaw, checkpointPitch,
+                visitedForkPointsSerial, initialForkFallbackSerial,
+                hasRunProgress);
     }
 
     public void clearActiveRun(String worldName, UUID playerId) {
         cache.set("worlds." + worldName + ".active." + playerId, null);
         persist();
+    }
+
+    // ---------------------------------------------------------------
+    // Location serialization helpers (for session snapshot save/load)
+    // ---------------------------------------------------------------
+
+    /**
+     * Serialize a Bukkit Location to "world,x,y,z,yaw,pitch".
+     * Returns null if the location or its world is null.
+     */
+    public static String serializeLocation(org.bukkit.Location loc) {
+        if (loc == null || loc.getWorld() == null) return null;
+        return loc.getWorld().getName() + ","
+                + loc.getX() + "," + loc.getY() + "," + loc.getZ() + ","
+                + loc.getYaw() + "," + loc.getPitch();
+    }
+
+    /**
+     * Deserialize a "world,x,y,z,yaw,pitch" string back to a Bukkit Location.
+     * Returns null if the string is null/empty or the world is not loaded.
+     */
+    public static org.bukkit.Location deserializeLocation(String serialized) {
+        if (serialized == null || serialized.isEmpty()) return null;
+        String[] parts = serialized.split(",", 6);
+        if (parts.length < 6) return null;
+        org.bukkit.World world = org.bukkit.Bukkit.getWorld(parts[0]);
+        if (world == null) return null;
+        try {
+            return new org.bukkit.Location(world,
+                    Double.parseDouble(parts[1]), Double.parseDouble(parts[2]), Double.parseDouble(parts[3]),
+                    Float.parseFloat(parts[4]), Float.parseFloat(parts[5]));
+        } catch (NumberFormatException e) {
+            return null;
+        }
+    }
+
+    /**
+     * Serialize a list of Locations to a semicolon-delimited string.
+     */
+    public static String serializeLocationList(java.util.List<org.bukkit.Location> list) {
+        if (list == null || list.isEmpty()) return null;
+        StringBuilder sb = new StringBuilder();
+        for (int i = 0; i < list.size(); i++) {
+            String s = serializeLocation(list.get(i));
+            if (s == null) continue;
+            if (sb.length() > 0) sb.append(';');
+            sb.append(s);
+        }
+        return sb.length() > 0 ? sb.toString() : null;
+    }
+
+    /**
+     * Deserialize a semicolon-delimited string back to a list of Locations.
+     */
+    public static java.util.List<org.bukkit.Location> deserializeLocationList(String serialized) {
+        java.util.List<org.bukkit.Location> list = new java.util.ArrayList<>();
+        if (serialized == null || serialized.isEmpty()) return list;
+        for (String part : serialized.split(";")) {
+            org.bukkit.Location loc = deserializeLocation(part.trim());
+            if (loc != null) list.add(loc);
+        }
+        return list;
     }
 
     // ---------------------------------------------------------------
@@ -278,10 +464,63 @@ public class RecordsManager {
         public final int medals;
         public final int stone, bronze, silver, gold;
         public final Map<String, String> claimedLevels;
+        /** Player's exact location when leaving the PKW world (null if not saved). */
+        public final String locWorldName;
+        public final double locX, locY, locZ;
+        public final float locYaw, locPitch;
+
+        // ---- Per-level session snapshot (ParkourSession) ----
+        /** The map ID of the current level, or null if no active session was saved. */
+        public final String sessionMapId;
+        /** The deployment ID of the current level. */
+        public final String sessionDeploymentId;
+        /** Accumulated per-level elapsed time in ms. */
+        public final long sessionElapsedMs;
+        /** Whether the per-level timer was actively running. */
+        public final boolean sessionStarted;
+        /** Whether this level had been completed. */
+        public final boolean sessionCompleted;
+        /** Whether the player was inside the deployment region. */
+        public final boolean sessionInsideRegion;
+        /** SessionState name: "RUNNING" or "AWAITING_HANDOFF". */
+        public final String sessionState;
+        /** Death-line Y coordinate for this level. */
+        public final double sessionDeathLineY;
+        /** Checkpoint location fields (null worldName → no checkpoint saved). */
+        public final String checkpointWorld;
+        public final double checkpointX, checkpointY, checkpointZ;
+        public final float checkpointYaw, checkpointPitch;
+        /** Visited fork points, each serialized as "world,x,y,z,yaw,pitch", semicolon-delimited. */
+        public final String visitedForkPointsSerial;
+        /** Initial fork fallback, serialized as "world,x,y,z,yaw,pitch", or null. */
+        public final String initialForkFallbackSerial;
+        /** Whether the player had an active RunProgress (global timer) when saved. */
+        public final boolean hasRunProgress;
 
         SavedRunData(String playerName, long elapsedMs, int medals,
                      int stone, int bronze, int silver, int gold,
-                     Map<String, String> claimedLevels) {
+                     Map<String, String> claimedLevels,
+                     String locWorldName, double locX, double locY, double locZ,
+                     float locYaw, float locPitch) {
+            this(playerName, elapsedMs, medals, stone, bronze, silver, gold, claimedLevels,
+                    locWorldName, locX, locY, locZ, locYaw, locPitch,
+                    null, null, 0, false, false, false, null, 0,
+                    null, 0, 0, 0, 0, 0, null, null, true);
+        }
+
+        SavedRunData(String playerName, long elapsedMs, int medals,
+                     int stone, int bronze, int silver, int gold,
+                     Map<String, String> claimedLevels,
+                     String locWorldName, double locX, double locY, double locZ,
+                     float locYaw, float locPitch,
+                     String sessionMapId, String sessionDeploymentId,
+                     long sessionElapsedMs, boolean sessionStarted,
+                     boolean sessionCompleted, boolean sessionInsideRegion,
+                     String sessionState, double sessionDeathLineY,
+                     String checkpointWorld, double checkpointX, double checkpointY, double checkpointZ,
+                     float checkpointYaw, float checkpointPitch,
+                     String visitedForkPointsSerial, String initialForkFallbackSerial,
+                     boolean hasRunProgress) {
             this.playerName = playerName;
             this.elapsedMs = elapsedMs;
             this.medals = medals;
@@ -290,6 +529,44 @@ public class RecordsManager {
             this.silver = silver;
             this.gold = gold;
             this.claimedLevels = claimedLevels != null ? claimedLevels : Collections.emptyMap();
+            this.locWorldName = locWorldName;
+            this.locX = locX;
+            this.locY = locY;
+            this.locZ = locZ;
+            this.locYaw = locYaw;
+            this.locPitch = locPitch;
+            this.sessionMapId = sessionMapId;
+            this.sessionDeploymentId = sessionDeploymentId;
+            this.sessionElapsedMs = sessionElapsedMs;
+            this.sessionStarted = sessionStarted;
+            this.sessionCompleted = sessionCompleted;
+            this.sessionInsideRegion = sessionInsideRegion;
+            this.sessionState = sessionState;
+            this.sessionDeathLineY = sessionDeathLineY;
+            this.checkpointWorld = checkpointWorld;
+            this.checkpointX = checkpointX;
+            this.checkpointY = checkpointY;
+            this.checkpointZ = checkpointZ;
+            this.checkpointYaw = checkpointYaw;
+            this.checkpointPitch = checkpointPitch;
+            this.visitedForkPointsSerial = visitedForkPointsSerial;
+            this.initialForkFallbackSerial = initialForkFallbackSerial;
+            this.hasRunProgress = hasRunProgress;
+        }
+
+        /** Returns true if this saved run includes a last-known location. */
+        public boolean hasLocation() {
+            return locWorldName != null && !locWorldName.isEmpty();
+        }
+
+        /** Returns true if a per-level session snapshot was saved. */
+        public boolean hasSessionState() {
+            return sessionMapId != null && sessionDeploymentId != null;
+        }
+
+        /** Returns true if a valid checkpoint location was saved. */
+        public boolean hasCheckpoint() {
+            return checkpointWorld != null && !checkpointWorld.isEmpty();
         }
     }
 

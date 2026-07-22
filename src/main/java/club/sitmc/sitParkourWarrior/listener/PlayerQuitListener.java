@@ -1,8 +1,6 @@
 package club.sitmc.sitParkourWarrior.listener;
 
 import club.sitmc.sitParkourWarrior.config.PkwWorldManager;
-import club.sitmc.sitParkourWarrior.records.RecordsManager;
-import club.sitmc.sitParkourWarrior.session.RunProgress;
 import club.sitmc.sitParkourWarrior.session.SessionManager;
 import club.sitmc.sitParkourWarrior.visibility.VisibilityManager;
 
@@ -15,14 +13,12 @@ public class PlayerQuitListener implements Listener {
 
     private final SessionManager sessionManager;
     private final PkwWorldManager pkwWorldManager;
-    private final RecordsManager recordsManager;
     private final VisibilityManager visibilityManager;
 
     public PlayerQuitListener(SessionManager sessionManager, PkwWorldManager pkwWorldManager,
-                              RecordsManager recordsManager, VisibilityManager visibilityManager) {
+                              VisibilityManager visibilityManager) {
         this.sessionManager = sessionManager;
         this.pkwWorldManager = pkwWorldManager;
-        this.recordsManager = recordsManager;
         this.visibilityManager = visibilityManager;
     }
 
@@ -30,17 +26,10 @@ public class PlayerQuitListener implements Listener {
     public void onQuit(PlayerQuitEvent event) {
         Player player = event.getPlayer();
         if (pkwWorldManager.isPkwWorld(player.getWorld())) {
-            RunProgress rp = sessionManager.getRunProgress(player.getUniqueId());
-            if (rp != null) {
-                rp.pause();
-                recordsManager.saveActiveRunFull(player.getWorld().getName(),
-                        player.getUniqueId(), player.getName(),
-                        rp.getElapsedMs(), rp.getMedals(),
-                        rp.getStoneCount(), rp.getBronzeCount(), rp.getSilverCount(), rp.getGoldCount(),
-                        rp.getClaimedLevelsWithTypes());
-            }
+            sessionManager.saveAndClearActiveRun(player);
         }
         visibilityManager.cleanupPlayer(player);
+        // Belt-and-suspenders: ensure any non-PKW session state is also cleared
         sessionManager.removeRunProgress(event.getPlayer().getUniqueId());
         sessionManager.endSession(event.getPlayer(), false);
     }

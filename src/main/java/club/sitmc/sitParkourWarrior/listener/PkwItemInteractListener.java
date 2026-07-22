@@ -112,7 +112,9 @@ public class PkwItemInteractListener implements Listener {
         sessionManager.cleanupPlayerEquipment(player);
         player.setFallDistance(0f);
         player.setVelocity(new org.bukkit.util.Vector(0, 0, 0));
-        player.teleport(player.getWorld().getSpawnLocation());
+        // 标记为内部传送，避免 PlayerTeleportListener 误判为"离开地图"
+        // （quitRun 已清理 RunProgress，此处仅为安全兜底）
+        sessionManager.teleportToStartLocation(player, player.getWorld().getSpawnLocation());
         Msg.send(player, hadRun ? "已放弃当前跑酷。" : "已传送回出生点。");
     }
 }

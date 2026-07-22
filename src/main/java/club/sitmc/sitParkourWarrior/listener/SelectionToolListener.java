@@ -26,6 +26,9 @@ public class SelectionToolListener implements Listener {
             return;
         }
         Player player = event.getPlayer();
+        if (!selectionManager.isEditing(player)) {
+            return;
+        }
         ItemStack item = event.getItem();
         if (item == null || item.getType() != Material.STRING) {
             return;

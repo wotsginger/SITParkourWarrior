@@ -8,6 +8,11 @@ import club.sitmc.sitParkourWarrior.config.CountdownScoringConfig;
 import club.sitmc.sitParkourWarrior.config.PkwWorldManager;
 import club.sitmc.sitParkourWarrior.config.TimingMode;
 import club.sitmc.sitParkourWarrior.course.CourseLayoutAnalyzer;
+import club.sitmc.sitParkourWarrior.editor.EditSessionManager;
+import club.sitmc.sitParkourWarrior.listener.EditControlListener;
+import club.sitmc.sitParkourWarrior.listener.EditRegionChangeListener;
+import club.sitmc.sitParkourWarrior.listener.EditSessionCleanupListener;
+import club.sitmc.sitParkourWarrior.listener.StateListListener;
 import club.sitmc.sitParkourWarrior.listener.ItemLockListener;
 import club.sitmc.sitParkourWarrior.listener.PkwItemInteractListener;
 import club.sitmc.sitParkourWarrior.listener.PlayerDeathListener;
@@ -57,9 +62,12 @@ public final class SITParkourWarrior extends JavaPlugin {
     private CountdownScoringConfig countdownScoring;
     private BoardManager boardManager;
     private VisibilityManager visibilityManager;
+    private EditSessionManager editSessionManager;
     private BukkitTask actionBarTask;
     private BukkitTask boardRefreshTask;
     private BukkitTask visibilityTask;
+    private BukkitTask editAutosaveTask;
+    private static final long EDIT_AUTOSAVE_INTERVAL_TICKS = 20L * 60; // 60 seconds
     private final AtomicBoolean worldInitDone = new AtomicBoolean(false);
     private static final long FALLBACK_DELAY_TICKS = 100L;
 
@@ -79,6 +87,7 @@ public final class SITParkourWarrior extends JavaPlugin {
         this.sessionManager = new SessionManager(this, mapManager, dynamicService, recordsManager, pkwWorldManager, courseLayoutAnalyzer, countdownScoring, null);
         this.visibilityManager = new VisibilityManager(this, pkwWorldManager, sessionManager);
         sessionManager.setVisibilityManager(visibilityManager);
+        this.editSessionManager = new EditSessionManager(this, mapManager, selectionManager);
         this.particleService.start(selectionManager);
         mapManager.loadAll();
         dynamicService.startAllDeployed();
@@ -96,8 +105,14 @@ public final class SITParkourWarrior extends JavaPlugin {
         getServer().getPluginManager().registerEvents(new WorldChangeListener(pkwWorldManager, sessionManager, recordsManager, visibilityManager), this);
         getServer().getPluginManager().registerEvents(new PkwItemInteractListener(sessionManager, mapManager, pkwWorldManager, courseLayoutAnalyzer), this);
         getServer().getPluginManager().registerEvents(new PlayerTeleportListener(sessionManager, pkwWorldManager, visibilityManager), this);
+        getServer().getPluginManager().registerEvents(new EditControlListener(editSessionManager, mapManager, this), this);
+        getServer().getPluginManager().registerEvents(new EditRegionChangeListener(selectionManager, editSessionManager), this);
+        getServer().getPluginManager().registerEvents(new EditSessionCleanupListener(editSessionManager, selectionManager), this);
+        // Phase 2 rev 2: state papers are display-only — rename anvil disabled.
+        // getServer().getPluginManager().registerEvents(new EditPaperRenameListener(this, editSessionManager, mapManager), this);
+        getServer().getPluginManager().registerEvents(new StateListListener(editSessionManager, mapManager), this);
 
-        DPCommand command = new DPCommand(mapManager, sessionManager, selectionManager, dynamicService, courseLayoutAnalyzer, pkwWorldManager, recordsManager, countdownScoring, boardManager);
+        DPCommand command = new DPCommand(mapManager, sessionManager, selectionManager, dynamicService, courseLayoutAnalyzer, pkwWorldManager, recordsManager, countdownScoring, boardManager, editSessionManager);
         if (getCommand("sitpkw") != null) {
             getCommand("sitpkw").setExecutor(command);
             getCommand("sitpkw").setTabCompleter(command);
@@ -109,6 +124,8 @@ public final class SITParkourWarrior extends JavaPlugin {
         // boardManager.restoreAllEntities() 移至 initWorldDependent()，等世界就绪后再还原
         startBoardRefreshTask();
         visibilityTask = Bukkit.getScheduler().runTaskTimer(this, () -> visibilityManager.scanAndUpdate(), 0L, 5L);
+        editAutosaveTask = Bukkit.getScheduler().runTaskTimer(this, () -> editSessionManager.autosaveTick(),
+                EDIT_AUTOSAVE_INTERVAL_TICKS, EDIT_AUTOSAVE_INTERVAL_TICKS);
     }
 
     private void startActionBarTimer() {
@@ -337,6 +354,12 @@ public final class SITParkourWarrior extends JavaPlugin {
         }
         if (actionBarTask != null) {
             actionBarTask.cancel();
+        }
+        if (editAutosaveTask != null) {
+            editAutosaveTask.cancel();
+        }
+        if (editSessionManager != null) {
+            editSessionManager.shutdown();
         }
         if (dynamicService != null) {
             dynamicService.stopAll();

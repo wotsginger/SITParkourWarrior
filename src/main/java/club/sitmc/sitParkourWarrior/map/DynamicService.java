@@ -185,25 +185,17 @@ public class DynamicService {
 
         private int playOnce() {
             DynamicData data = map.getDynamicData();
-            List<String> states = data.getStates();
-            List<Integer> intervals = data.getIntervalSequence();
+            List<DynamicState> states = data.getStates();
             if (states.isEmpty()) {
                 return 20;
-            }
-            while (intervals.size() < states.size()) {
-                intervals.add(1);
-            }
-            while (intervals.size() > states.size()) {
-                intervals.remove(intervals.size() - 1);
             }
             if (stateIndex >= states.size()) {
                 stateIndex = 0;
             }
-            int duration = intervals.get(stateIndex);
-            String fileName = states.get(stateIndex);
+            DynamicState state = states.get(stateIndex);
             stateIndex++;
-            pasteSchematic(map, deployment, fileName);
-            return duration;
+            pasteSchematic(map, deployment, state.getFile());
+            return state.getInterval();
         }
     }
 

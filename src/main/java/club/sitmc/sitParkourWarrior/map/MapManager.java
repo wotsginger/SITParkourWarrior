@@ -12,6 +12,7 @@ import java.io.IOException;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashMap;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
@@ -144,9 +145,18 @@ public class MapManager {
         }
         ConfigurationSection dynamicSection = config.createSection("dynamic");
         dynamicSection.set("enabled", dynamicData.isEnabled());
-        dynamicSection.set("interval_sequence", dynamicData.getIntervalSequence());
-        dynamicSection.set("states", dynamicData.getStates());
-        dynamicSection.set("state_ids", dynamicData.getStateIds());
+        List<Map<String, Object>> stateMaps = new ArrayList<>();
+        for (DynamicState state : dynamicData.getStates()) {
+            Map<String, Object> m = new LinkedHashMap<>();
+            m.put("id", state.getId());
+            m.put("file", state.getFile());
+            if (state.getName() != null && !state.getName().isBlank()) {
+                m.put("name", state.getName());
+            }
+            m.put("interval", state.getInterval());
+            stateMaps.add(m);
+        }
+        dynamicSection.set("state_list", stateMaps);
 
         List<Deployment> deployments = new ArrayList<>(map.getDeployments());
         if (!deployments.isEmpty()) {
@@ -275,12 +285,7 @@ public class MapManager {
                 if (dynamicSection != null) {
                     DynamicData dynamicData = map.getDynamicData();
                     dynamicData.setEnabled(dynamicSection.getBoolean("enabled", false));
-                    dynamicData.getIntervalSequence().clear();
-                    dynamicData.getIntervalSequence().addAll(dynamicSection.getIntegerList("interval_sequence"));
-                    dynamicData.getStates().clear();
-                    dynamicData.getStates().addAll(dynamicSection.getStringList("states"));
-                    dynamicData.getStateIds().clear();
-                    dynamicData.getStateIds().addAll(dynamicSection.getIntegerList("state_ids"));
+                    loadDynamicStates(dynamicSection, dynamicData);
                     // Auto-enable legacy maps that already have ≥2 states
                     // but were saved before the dynamic.enabled default fix.
                     if (!dynamicData.isEnabled() && dynamicData.getStates().size() >= 2) {
@@ -344,6 +349,75 @@ public class MapManager {
             }
         }
         rebuildWorldIndex();
+    }
+
+    /**
+     * Loads the dynamic state list, preferring the new ordered {@code state_list}
+     * format and falling back to migrating the legacy parallel-list format
+     * ({@code states} / {@code interval_sequence} / {@code state_ids}).
+     * The legacy file on disk is left untouched; the new format is only written
+     * back the next time {@link #saveMap} runs.
+     */
+    private void loadDynamicStates(ConfigurationSection dynamicSection, DynamicData dynamicData) {
+        dynamicData.getStates().clear();
+        if (dynamicSection.isList("state_list")) {
+            for (Object raw : dynamicSection.getList("state_list", Collections.emptyList())) {
+                if (!(raw instanceof Map<?, ?> map)) {
+                    continue;
+                }
+                int id = toInt(map.get("id"), dynamicData.nextId());
+                String file = map.get("file") != null ? String.valueOf(map.get("file")) : null;
+                if (file == null || file.isBlank()) {
+                    continue;
+                }
+                String name = map.get("name") != null ? String.valueOf(map.get("name")) : null;
+                int interval = toInt(map.get("interval"), DynamicState.DEFAULT_INTERVAL_TICKS);
+                dynamicData.getStates().add(new DynamicState(id, file, name, interval));
+            }
+            return;
+        }
+
+        // Legacy migration: three parallel lists (states / interval_sequence / state_ids),
+        // historically not always kept in sync (addstate never appended to state_ids,
+        // delstate never removed from it). Pair up by index defensively, fabricate a
+        // synthetic id for any entry missing one, then sort by id ascending so playback
+        // order matches the old state_ids-driven order.
+        List<String> legacyStates = dynamicSection.getStringList("states");
+        List<Integer> legacyIntervals = dynamicSection.getIntegerList("interval_sequence");
+        List<Integer> legacyIds = dynamicSection.getIntegerList("state_ids");
+        if (legacyStates.isEmpty()) {
+            return;
+        }
+        int maxKnownId = 0;
+        for (Integer id : legacyIds) {
+            if (id != null && id > maxKnownId) {
+                maxKnownId = id;
+            }
+        }
+        int syntheticNext = maxKnownId + 1;
+        List<DynamicState> migrated = new ArrayList<>();
+        for (int i = 0; i < legacyStates.size(); i++) {
+            String file = legacyStates.get(i);
+            int interval = i < legacyIntervals.size() ? legacyIntervals.get(i) : DynamicState.DEFAULT_INTERVAL_TICKS;
+            int id = i < legacyIds.size() ? legacyIds.get(i) : syntheticNext++;
+            migrated.add(new DynamicState(id, file, null, interval));
+        }
+        migrated.sort((a, b) -> Integer.compare(a.getId(), b.getId()));
+        dynamicData.getStates().addAll(migrated);
+    }
+
+    private int toInt(Object value, int fallback) {
+        if (value instanceof Number number) {
+            return number.intValue();
+        }
+        if (value instanceof String s) {
+            try {
+                return Integer.parseInt(s.trim());
+            } catch (NumberFormatException ignored) {
+                return fallback;
+            }
+        }
+        return fallback;
     }
 
     public boolean isRegionTooLarge(Region region) {

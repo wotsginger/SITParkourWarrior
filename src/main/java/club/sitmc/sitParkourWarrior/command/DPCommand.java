@@ -7,11 +7,13 @@ import club.sitmc.sitParkourWarrior.config.CountdownScoringConfig;
 import club.sitmc.sitParkourWarrior.config.PkwWorldManager;
 import club.sitmc.sitParkourWarrior.config.TimingMode;
 import club.sitmc.sitParkourWarrior.course.CourseLayoutAnalyzer;
+import club.sitmc.sitParkourWarrior.editor.EditSessionManager;
 import club.sitmc.sitParkourWarrior.records.RecordsManager;
 import club.sitmc.sitParkourWarrior.map.Deployment;
 import club.sitmc.sitParkourWarrior.map.Difficulty;
 import club.sitmc.sitParkourWarrior.map.DynamicData;
 import club.sitmc.sitParkourWarrior.map.DynamicService;
+import club.sitmc.sitParkourWarrior.map.DynamicState;
 import club.sitmc.sitParkourWarrior.map.EndTier;
 import club.sitmc.sitParkourWarrior.map.MapManager;
 import club.sitmc.sitParkourWarrior.map.NodeType;
@@ -52,9 +54,10 @@ DPCommand implements CommandExecutor, TabCompleter {
     private final RecordsManager recordsManager;
     private final CountdownScoringConfig countdownScoring;
     private final BoardManager boardManager;
+    private final EditSessionManager editSessionManager;
     private final SchematicService schematicService = new SchematicService();
 
-    public DPCommand(MapManager mapManager, SessionManager sessionManager, SelectionManager selectionManager, DynamicService dynamicService, CourseLayoutAnalyzer courseLayoutAnalyzer, PkwWorldManager pkwWorldManager, RecordsManager recordsManager, CountdownScoringConfig countdownScoring, BoardManager boardManager) {
+    public DPCommand(MapManager mapManager, SessionManager sessionManager, SelectionManager selectionManager, DynamicService dynamicService, CourseLayoutAnalyzer courseLayoutAnalyzer, PkwWorldManager pkwWorldManager, RecordsManager recordsManager, CountdownScoringConfig countdownScoring, BoardManager boardManager, EditSessionManager editSessionManager) {
         this.mapManager = mapManager;
         this.sessionManager = sessionManager;
         this.selectionManager = selectionManager;
@@ -64,13 +67,14 @@ DPCommand implements CommandExecutor, TabCompleter {
         this.recordsManager = recordsManager;
         this.countdownScoring = countdownScoring;
         this.boardManager = boardManager;
+        this.editSessionManager = editSessionManager;
     }
 
     private static final java.util.Set<String> ADMIN_COMMANDS = java.util.Set.of(
             "create", "edit", "exit", "particles", "sound", "pos1", "pos2",
             "setstart", "setend", "title", "subtitle", "difficulty", "dynamic", "deploy",
             "undeploy", "save", "delete", "addforkpoint", "delforkpoint",
-            "setendtier", "reload", "pkwworld", "record"
+            "setendtier", "reload", "pkwworld", "record", "tool"
     );
 
     @Override
@@ -139,6 +143,8 @@ DPCommand implements CommandExecutor, TabCompleter {
                 return handleBoard(sender, args);
             case "record":
                 return handleRecord(sender, args);
+            case "tool":
+                return handleTool(sender);
             default:
                 Msg.send(sender, "未知子命令。输入 /sitpkw 查看用法。");
                 return true;
@@ -183,6 +189,19 @@ DPCommand implements CommandExecutor, TabCompleter {
         Msg.send(sender, "/sitpkw board cleanup [世界名]          扫描孤儿榜牌实体（需确认后删除）");
         Msg.send(sender, "/sitpkw record delete <世界> <榜名> <玩家名或UUID>  删除一条成绩");
         Msg.send(sender, "/sitpkw reload                         重载配置");
+        Msg.send(sender, "/sitpkw tool                           发放动态编辑控制器物品");
+    }
+
+    private boolean handleTool(CommandSender sender) {
+        if (!(sender instanceof Player player)) {
+            Msg.send(sender, "只能由玩家执行。");
+            return true;
+        }
+        boolean granted = editSessionManager.giveEditToolIfAbsent(player);
+        Msg.send(sender, granted
+                ? "已发放编辑控制器物品：左键切换播放/暂停，右键查看状态列表。"
+                : "你已持有编辑控制器物品，未重复发放。");
+        return true;
     }
 
     private boolean handleCreate(CommandSender sender, String[] args) {
@@ -207,6 +226,7 @@ DPCommand implements CommandExecutor, TabCompleter {
         map.setNodeType(nodeType);
         selectionManager.setEditingMap(player, map);
         mapManager.saveMap(map);
+        editSessionManager.startSession(player, map);
         Msg.send(sender, "已创建关卡（" + nodeType.toConfigString() + "）并进入编辑: " + map.getId());
         return true;
     }
@@ -226,6 +246,7 @@ DPCommand implements CommandExecutor, TabCompleter {
             return true;
         }
         selectionManager.setEditingMap(player, map);
+        editSessionManager.startSession(player, map);
         Msg.send(sender, "已进入编辑: " + map.getId());
         return true;
     }
@@ -239,6 +260,7 @@ DPCommand implements CommandExecutor, TabCompleter {
             Msg.send(sender, "当前不在编辑模式。");
             return true;
         }
+        editSessionManager.exitSession(player);
         selectionManager.clearEditingMap(player);
         Msg.send(sender, "已退出编辑模式。");
         return true;
@@ -460,8 +482,7 @@ DPCommand implements CommandExecutor, TabCompleter {
                     Msg.send(sender, "用法: /sitpkw dynamic addstate <文件名> [间隔]");
                     return true;
                 }
-                data.getStates().add(args[2]);
-                int interval = 1;
+                int interval = DynamicState.DEFAULT_INTERVAL_TICKS;
                 if (args.length >= 4) {
                     try {
                         interval = Integer.parseInt(args[3]);
@@ -470,15 +491,12 @@ DPCommand implements CommandExecutor, TabCompleter {
                         return true;
                     }
                 }
-                if (interval <= 0) {
-                    interval = 1;
-                }
-                data.getIntervalSequence().add(interval);
+                data.getStates().add(new DynamicState(data.nextId(), args[2], null, interval));
                 if (data.getStates().size() >= 2) {
                     data.setEnabled(true);
                 }
                 mapManager.saveMap(map);
-                Msg.send(sender, "已添加状态 " + args[2] + "，间隔 " + interval + "。");
+                Msg.send(sender, "已添加状态 " + args[2] + "，间隔 " + DynamicState.clampInterval(interval) + "。");
                 return true;
             case "delstate":
                 if (args.length < 3) {
@@ -490,12 +508,9 @@ DPCommand implements CommandExecutor, TabCompleter {
                     Msg.send(sender, "找不到对应的状态。");
                     return true;
                 }
-                String removed = data.getStates().remove(index);
-                if (index < data.getIntervalSequence().size()) {
-                    data.getIntervalSequence().remove(index);
-                }
+                DynamicState removed = data.getStates().remove(index);
                 mapManager.saveMap(map);
-                Msg.send(sender, "已删除状态 " + removed + "。");
+                Msg.send(sender, "已删除状态 " + removed.getFile() + "。");
                 return true;
             case "interval":
                 if (args.length < 4) {
@@ -520,30 +535,20 @@ DPCommand implements CommandExecutor, TabCompleter {
                     Msg.send(sender, "无效时间: " + args[3]);
                     return true;
                 }
-                if (ticks <= 0) {
-                    ticks = 1;
-                }
-                while (data.getIntervalSequence().size() < data.getStates().size()) {
-                    data.getIntervalSequence().add(1);
-                }
-                data.getIntervalSequence().set(targetIndex, ticks);
+                data.getStates().get(targetIndex).setInterval(ticks);
                 mapManager.saveMap(map);
-                Msg.send(sender, "已更新状态间隔为 " + ticks + "。");
+                Msg.send(sender, "已更新状态间隔为 " + data.getStates().get(targetIndex).getInterval() + "。");
                 return true;
             case "list":
                 if (data.getStates().isEmpty()) {
                     Msg.send(sender, "当前没有动态状态。");
                     return true;
                 }
-                while (data.getIntervalSequence().size() < data.getStates().size()) {
-                    data.getIntervalSequence().add(1);
-                }
-                while (data.getIntervalSequence().size() > data.getStates().size()) {
-                    data.getIntervalSequence().remove(data.getIntervalSequence().size() - 1);
-                }
-                Msg.send(sender, "动态状态列表（序号: 文件名 / 间隔）");
+                Msg.send(sender, "动态状态列表（序号: 展示名 / 文件名 / 间隔 / id）");
                 for (int i = 0; i < data.getStates().size(); i++) {
-                    Msg.send(sender, (i + 1) + ": " + data.getStates().get(i) + " / " + data.getIntervalSequence().get(i));
+                    DynamicState s = data.getStates().get(i);
+                    Msg.send(sender, (i + 1) + ": " + s.getDisplayName(i + 1) + " / " + s.getFile()
+                            + " / " + s.getInterval() + " / id=" + s.getId());
                 }
                 return true;
             default:
@@ -563,7 +568,7 @@ DPCommand implements CommandExecutor, TabCompleter {
             // ignore
         }
         for (int i = 0; i < data.getStates().size(); i++) {
-            if (data.getStates().get(i).equalsIgnoreCase(token)) {
+            if (data.getStates().get(i).getFile().equalsIgnoreCase(token)) {
                 return i;
             }
         }
@@ -716,7 +721,7 @@ DPCommand implements CommandExecutor, TabCompleter {
 
         // Schematic paste (region-based, works for all types).
         File mapFolder = mapManager.getMapFolder(map);
-        String initialState = map.getDynamicData().getStates().isEmpty() ? null : map.getDynamicData().getStates().get(0);
+        String initialState = map.getDynamicData().getStates().isEmpty() ? null : map.getDynamicData().getStates().get(0).getFile();
         if (initialState != null) {
             File schemFile = new File(mapFolder, initialState);
             if (schemFile.exists()) {
@@ -1400,7 +1405,7 @@ DPCommand implements CommandExecutor, TabCompleter {
     @Override
     public List<String> onTabComplete(CommandSender sender, Command command, String alias, String[] args) {
         if (args.length == 1) {
-            var allCmds = new java.util.ArrayList<>(Arrays.asList("create", "edit", "exit", "particles", "sound", "pos1", "pos2", "setstart", "setend", "title", "difficulty", "dynamic", "deploy", "undeploy", "addforkpoint", "delforkpoint", "setendtier", "save", "delete", "pkwworld", "quit", "top", "board", "record", "stats", "reload"));
+            var allCmds = new java.util.ArrayList<>(Arrays.asList("create", "edit", "exit", "particles", "sound", "pos1", "pos2", "setstart", "setend", "title", "difficulty", "dynamic", "deploy", "undeploy", "addforkpoint", "delforkpoint", "setendtier", "save", "delete", "pkwworld", "quit", "top", "board", "record", "stats", "reload", "tool"));
             if (!sender.hasPermission("dynamicparkour.admin")) {
                 allCmds.removeIf(ADMIN_COMMANDS::contains);
             }
